@@ -7,7 +7,7 @@ import cors from "cors";
 import multer from "multer";
 import sharp from "sharp";
 import axios from "axios";
-// import { exiftool } from "exiftool-vendored";
+import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,7 +38,10 @@ async function startServer() {
   app.use(cors());
 
   // Serve static files from public/uploads BEFORE Vite middleware
-  app.use("/uploads", express.static(UPLOADS_DIR));
+  app.use("/uploads", (req, res, next) => {
+    console.log(`📸 Requesting image: ${req.url}`);
+    next();
+  }, express.static(UPLOADS_DIR));
 
   // Diagnostic route
   app.get("/api/debug-storage", async (req, res) => {
@@ -68,12 +71,26 @@ async function startServer() {
       const isRaw = ['.arw', '.cr2', '.nef', '.dng', '.orf', '.raf'].includes(ext);
       
       if (isRaw) {
-        console.log(`RAW preview extraction skipped in production for stability: ${fileName}`);
-        // Fallback or skip
-        /*
-        await exiftool.extractPreview(filePath, thumbPath);
-        ...
-        */
+        console.log(`📸 Extracting RAW preview for: ${fileName}`);
+        try {
+          // Extract preview image (usually a full-size JPEG embedded in the RAW file)
+          await exiftool.extractPreview(filePath, thumbPath);
+          console.log(`✅ RAW preview extracted: ${thumbName}`);
+          
+          // Optionally resize the extracted preview to be a reasonable thumbnail size
+          // but extractPreview usually gives a good enough image.
+          // Let's ensure it's not TOO big for a thumbnail.
+          const buffer = fs.readFileSync(thumbPath);
+          await sharp(buffer)
+            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toFile(thumbPath + '.tmp');
+          
+          fs.renameSync(thumbPath + '.tmp', thumbPath);
+        } catch (rawErr) {
+          console.error(`❌ Error extracting RAW preview for ${fileName}:`, rawErr);
+          return null;
+        }
       } else {
         // Regular image thumbnail
         await sharp(filePath)

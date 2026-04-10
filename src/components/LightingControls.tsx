@@ -34,10 +34,14 @@ interface LightingControlsProps {
 }
 
 export const LightingControls = React.memo(function LightingControls({ settings, onChange, userPlan }: LightingControlsProps) {
-  const handleChange = (key: keyof LightingSettings, value: any) => {
-    const val = Array.isArray(value) ? value[0] : value;
-    
-    // Direct CSS variable update for instant feedback
+  const [localSettings, setLocalSettings] = React.useState(settings);
+
+  // Sync local settings when props change (e.g. preset applied)
+  React.useEffect(() => {
+    setLocalSettings(settings);
+  }, [settings]);
+
+  const updateCSSVariables = (key: keyof LightingSettings, val: any) => {
     const root = document.documentElement;
     if (key === 'brightness') root.style.setProperty('--img-brightness', `${val}%`);
     if (key === 'contrast') root.style.setProperty('--img-contrast', `${val}%`);
@@ -55,7 +59,16 @@ export const LightingControls = React.memo(function LightingControls({ settings,
     if (key === 'cropBottom') root.style.setProperty('--img-crop-bottom', `${val}%`);
     if (key === 'cropLeft') root.style.setProperty('--img-crop-left', `${val}%`);
     if (key === 'cropRight') root.style.setProperty('--img-crop-right', `${val}%`);
+  };
 
+  const handleChange = (key: keyof LightingSettings, value: any) => {
+    const val = Array.isArray(value) ? value[0] : value;
+    setLocalSettings(prev => ({ ...prev, [key]: val }));
+    updateCSSVariables(key, val);
+  };
+
+  const handleCommit = (key: keyof LightingSettings, value: any) => {
+    const val = Array.isArray(value) ? value[0] : value;
     onChange({ ...settings, [key]: val });
   };
 
@@ -105,6 +118,7 @@ export const LightingControls = React.memo(function LightingControls({ settings,
           max={max}
           step={step}
           onValueChange={(v) => !locked && handleChange(settingKey, v)}
+          onValueCommit={(v) => !locked && handleCommit(settingKey, v)}
           className="py-1 cursor-pointer"
         />
       </div>
@@ -120,13 +134,49 @@ export const LightingControls = React.memo(function LightingControls({ settings,
           <Badge variant="outline" className="text-[7px] border-zinc-800 text-zinc-500">PRO</Badge>
         </h4>
         <div className="space-y-5">
-          <ControlItem label="Rotación" icon={RotateCw} value={settings.rotation} min={-180} max={180} step={1} settingKey="rotation" requiredPlan="pro" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <ControlItem label="Rotación" icon={RotateCw} value={localSettings.rotation} min={-180} max={180} step={1} settingKey="rotation" requiredPlan="pro" />
+            </div>
+            <div className="flex gap-1 pt-6">
+              <Button 
+                variant="outline" 
+                size="icon" 
+                className="h-8 w-8 border-zinc-800"
+                onClick={() => {
+                  const newRot = ((localSettings.rotation - 90 + 180) % 360) - 180;
+                  handleChange('rotation', newRot);
+                  handleCommit('rotation', newRot);
+                }}
+                disabled={isLocked('pro')}
+              >
+                <RotateCw className="w-3.5 h-3.5 rotate-180" />
+              </Button>
+              <Button 
+                variant="outline" 
+                size="icon" 
+                className="h-8 w-8 border-zinc-800"
+                onClick={() => {
+                  const newRot = ((localSettings.rotation + 90 + 180) % 360) - 180;
+                  handleChange('rotation', newRot);
+                  handleCommit('rotation', newRot);
+                }}
+                disabled={isLocked('pro')}
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Button 
               variant="outline" 
               size="sm" 
-              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${settings.flipX ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
-              onClick={() => !isLocked('pro') && handleChange('flipX', !settings.flipX)}
+              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${localSettings.flipX ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
+              onClick={() => {
+                const newVal = !localSettings.flipX;
+                handleChange('flipX', newVal);
+                handleCommit('flipX', newVal);
+              }}
               disabled={isLocked('pro')}
             >
               <FlipHorizontal className="w-3.5 h-3.5 mr-2" />
@@ -135,8 +185,12 @@ export const LightingControls = React.memo(function LightingControls({ settings,
             <Button 
               variant="outline" 
               size="sm" 
-              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${settings.flipY ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
-              onClick={() => !isLocked('pro') && handleChange('flipY', !settings.flipY)}
+              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${localSettings.flipY ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
+              onClick={() => {
+                const newVal = !localSettings.flipY;
+                handleChange('flipY', newVal);
+                handleCommit('flipY', newVal);
+              }}
               disabled={isLocked('pro')}
             >
               <FlipVertical className="w-3.5 h-3.5 mr-2" />
@@ -144,10 +198,10 @@ export const LightingControls = React.memo(function LightingControls({ settings,
             </Button>
           </div>
           <div className="pt-2 space-y-4">
-            <ControlItem label="Recorte Sup" icon={Scissors} value={settings.cropTop} min={0} max={50} settingKey="cropTop" requiredPlan="studio" />
-            <ControlItem label="Recorte Inf" icon={Scissors} value={settings.cropBottom} min={0} max={50} settingKey="cropBottom" requiredPlan="studio" />
-            <ControlItem label="Recorte Izq" icon={Scissors} value={settings.cropLeft} min={0} max={50} settingKey="cropLeft" requiredPlan="studio" />
-            <ControlItem label="Recorte Der" icon={Scissors} value={settings.cropRight} min={0} max={50} settingKey="cropRight" requiredPlan="studio" />
+            <ControlItem label="Recorte Sup" icon={Scissors} value={localSettings.cropTop} min={0} max={50} settingKey="cropTop" requiredPlan="studio" />
+            <ControlItem label="Recorte Inf" icon={Scissors} value={localSettings.cropBottom} min={0} max={50} settingKey="cropBottom" requiredPlan="studio" />
+            <ControlItem label="Recorte Izq" icon={Scissors} value={localSettings.cropLeft} min={0} max={50} settingKey="cropLeft" requiredPlan="studio" />
+            <ControlItem label="Recorte Der" icon={Scissors} value={localSettings.cropRight} min={0} max={50} settingKey="cropRight" requiredPlan="studio" />
           </div>
         </div>
       </div>
@@ -156,12 +210,12 @@ export const LightingControls = React.memo(function LightingControls({ settings,
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Ajustes Básicos</h4>
         <div className="space-y-5">
-          <ControlItem label="Exposición" icon={Zap} value={settings.exposure} min={-5} max={5} step={0.01} settingKey="exposure" />
-          <ControlItem label="Contraste" icon={Contrast} value={settings.contrast} min={0} max={200} step={1} settingKey="contrast" />
-          <ControlItem label="Brillo" icon={Sun} value={settings.brightness} min={0} max={200} step={1} settingKey="brightness" />
-          <ControlItem label="Saturación" icon={Droplets} value={settings.saturation} min={0} max={200} step={1} settingKey="saturation" />
-          <ControlItem label="Temperatura" icon={Thermometer} value={settings.warmth} min={-100} max={100} step={1} settingKey="warmth" />
-          <ControlItem label="Tinte" icon={Palette} value={settings.tint} min={-100} max={100} step={1} settingKey="tint" requiredPlan="pro" />
+          <ControlItem label="Exposición" icon={Zap} value={localSettings.exposure} min={-5} max={5} step={0.01} settingKey="exposure" />
+          <ControlItem label="Contraste" icon={Contrast} value={localSettings.contrast} min={0} max={200} step={1} settingKey="contrast" />
+          <ControlItem label="Brillo" icon={Sun} value={localSettings.brightness} min={0} max={200} step={1} settingKey="brightness" />
+          <ControlItem label="Saturación" icon={Droplets} value={localSettings.saturation} min={0} max={200} step={1} settingKey="saturation" />
+          <ControlItem label="Temperatura" icon={Thermometer} value={localSettings.warmth} min={-100} max={100} step={1} settingKey="warmth" />
+          <ControlItem label="Tinte" icon={Palette} value={localSettings.tint} min={-100} max={100} step={1} settingKey="tint" requiredPlan="pro" />
         </div>
       </div>
 
@@ -169,10 +223,10 @@ export const LightingControls = React.memo(function LightingControls({ settings,
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Luz y Tono</h4>
         <div className="space-y-5">
-          <ControlItem label="Altas Luces" icon={Sun} value={settings.highlights} min={0} max={200} settingKey="highlights" requiredPlan="pro" />
-          <ControlItem label="Sombras" icon={Wind} value={settings.shadows} min={0} max={200} settingKey="shadows" requiredPlan="pro" />
-          <ControlItem label="Blancos" icon={CircleDot} value={settings.whites} min={0} max={200} settingKey="whites" requiredPlan="pro" />
-          <ControlItem label="Negros" icon={CircleDot} value={settings.blacks} min={0} max={200} settingKey="blacks" requiredPlan="pro" />
+          <ControlItem label="Altas Luces" icon={Sun} value={localSettings.highlights} min={0} max={200} settingKey="highlights" requiredPlan="pro" />
+          <ControlItem label="Sombras" icon={Wind} value={localSettings.shadows} min={0} max={200} settingKey="shadows" requiredPlan="pro" />
+          <ControlItem label="Blancos" icon={CircleDot} value={localSettings.whites} min={0} max={200} settingKey="whites" requiredPlan="pro" />
+          <ControlItem label="Negros" icon={CircleDot} value={localSettings.blacks} min={0} max={200} settingKey="blacks" requiredPlan="pro" />
         </div>
       </div>
 
@@ -180,10 +234,10 @@ export const LightingControls = React.memo(function LightingControls({ settings,
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Presencia</h4>
         <div className="space-y-5">
-          <ControlItem label="Claridad" icon={Eye} value={settings.clarity} min={0} max={100} settingKey="clarity" requiredPlan="pro" />
-          <ControlItem label="Vibrance" icon={Sparkles} value={settings.vibrance} min={0} max={200} settingKey="vibrance" requiredPlan="pro" />
-          <ControlItem label="Textura" icon={Layers} value={settings.texture} min={0} max={100} settingKey="texture" requiredPlan="studio" />
-          <ControlItem label="Dehaze" icon={CloudFog} value={settings.dehaze} min={0} max={100} settingKey="dehaze" requiredPlan="studio" />
+          <ControlItem label="Claridad" icon={Eye} value={localSettings.clarity} min={0} max={100} settingKey="clarity" requiredPlan="pro" />
+          <ControlItem label="Vibrance" icon={Sparkles} value={localSettings.vibrance} min={0} max={200} settingKey="vibrance" requiredPlan="pro" />
+          <ControlItem label="Textura" icon={Layers} value={localSettings.texture} min={0} max={100} settingKey="texture" requiredPlan="studio" />
+          <ControlItem label="Dehaze" icon={CloudFog} value={localSettings.dehaze} min={0} max={100} settingKey="dehaze" requiredPlan="studio" />
         </div>
       </div>
 
@@ -191,10 +245,10 @@ export const LightingControls = React.memo(function LightingControls({ settings,
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Detalle y Óptica</h4>
         <div className="space-y-5">
-          <ControlItem label="Nitidez" icon={Focus} value={settings.sharpening} min={0} max={100} settingKey="sharpening" requiredPlan="pro" />
-          <ControlItem label="Red. Ruido" icon={Waves} value={settings.noiseReduction} min={0} max={100} settingKey="noiseReduction" requiredPlan="studio" />
-          <ControlItem label="Viñeteo" icon={CircleDot} value={settings.vignette} min={0} max={100} settingKey="vignette" requiredPlan="pro" />
-          <ControlItem label="Distorsión" icon={Box} value={settings.distortion} min={-50} max={50} settingKey="distortion" requiredPlan="studio" />
+          <ControlItem label="Nitidez" icon={Focus} value={localSettings.sharpening} min={0} max={100} settingKey="sharpening" requiredPlan="pro" />
+          <ControlItem label="Red. Ruido" icon={Waves} value={localSettings.noiseReduction} min={0} max={100} settingKey="noiseReduction" requiredPlan="studio" />
+          <ControlItem label="Viñeteo" icon={CircleDot} value={localSettings.vignette} min={0} max={100} settingKey="vignette" requiredPlan="pro" />
+          <ControlItem label="Distorsión" icon={Box} value={localSettings.distortion} min={-50} max={50} settingKey="distortion" requiredPlan="studio" />
         </div>
       </div>
 
@@ -202,9 +256,9 @@ export const LightingControls = React.memo(function LightingControls({ settings,
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Efectos Creativos</h4>
         <div className="space-y-5">
-          <ControlItem label="Sepia" icon={Palette} value={settings.sepia} min={0} max={100} settingKey="sepia" requiredPlan="studio" />
-          <ControlItem label="Grano" icon={Ghost} value={settings.grain} min={0} max={100} settingKey="grain" requiredPlan="studio" />
-          <ControlItem label="Desenfoque" icon={CloudFog} value={settings.blur} min={0} max={20} step={0.1} settingKey="blur" requiredPlan="studio" />
+          <ControlItem label="Sepia" icon={Palette} value={localSettings.sepia} min={0} max={100} settingKey="sepia" requiredPlan="studio" />
+          <ControlItem label="Grano" icon={Ghost} value={localSettings.grain} min={0} max={100} settingKey="grain" requiredPlan="studio" />
+          <ControlItem label="Desenfoque" icon={CloudFog} value={localSettings.blur} min={0} max={20} step={0.1} settingKey="blur" requiredPlan="studio" />
         </div>
       </div>
     </div>

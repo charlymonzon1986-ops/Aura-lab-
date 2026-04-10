@@ -10,6 +10,8 @@ import {
   HardDrive, 
   Zap,
   Layout,
+  LayoutDashboard,
+  PieChart,
   Plus,
   HardDrive as HardDriveIcon,
   Image as ImageIcon, 
@@ -35,7 +37,6 @@ import {
   Lock,
   CreditCard,
   CheckCircle2,
-  Github,
   Trash2 as TrashIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -84,16 +85,18 @@ import { OperationType, handleFirestoreError } from "@/src/firebase";
 
 const fixImageUrl = (url: string) => {
   if (!url) return "";
+  if (url.startsWith('/uploads/') || url.startsWith('blob:') || url.startsWith('data:')) return url;
   
   // Google Drive Fix
-  const driveMatch = url.match(/\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/);
+  const driveMatch = url.match(/\/(?:file\/d\/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)/);
   if (driveMatch && driveMatch[1]) {
     return `https://drive.google.com/uc?export=view&id=${driveMatch[1]}`;
   }
   
   // Dropbox Fix
-  if (url.includes("dropbox.com") && url.endsWith("dl=0")) {
-    return url.replace("dl=0", "raw=1");
+  if (url.includes("dropbox.com")) {
+    if (url.endsWith("dl=0")) return url.replace("dl=0", "raw=1");
+    if (!url.includes("raw=1") && !url.includes("dl=1")) return `${url}${url.includes('?') ? '&' : '?'}raw=1`;
   }
 
   return url;
@@ -107,9 +110,9 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = React.useState(false);
   const [customLogo, setCustomLogo] = React.useState<string | null>(null);
   const [showPricing, setShowPricing] = React.useState(false);
+  const [showStorageModal, setShowStorageModal] = React.useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
-  const [githubUser, setGithubUser] = React.useState<any>(null);
   
   // Reset zoom when photo changes
   React.useEffect(() => {
@@ -121,14 +124,19 @@ export default function App() {
   const [pan, setPan] = React.useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = React.useState(false);
   const [dragStart, setDragStart] = React.useState({ x: 0, y: 0 });
-  const [activeTab, setActiveTab] = React.useState<'gallery' | 'editor'>('gallery');
+  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor'>('dashboard');
   const [showControls, setShowControls] = React.useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [isComparing, setIsComparing] = React.useState(false);
   const [compareValue, setCompareValue] = React.useState(50);
   const [isPressing, setIsPressing] = React.useState(false);
   const [newPhotoUrl, setNewPhotoUrl] = React.useState("");
+  const galleryRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const scrollToGallery = () => {
+    galleryRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   const handleLogin = async () => {
     try {
@@ -148,47 +156,6 @@ export default function App() {
       );
     }
   };
-
-  const handleConnectGitHub = async () => {
-    try {
-      const response = await fetch('/api/auth/github/url');
-      if (!response.ok) throw new Error('Error al obtener la URL de GitHub');
-      const { url } = await response.json();
-
-      const width = 600;
-      const height = 700;
-      const left = window.screenX + (window.outerWidth - width) / 2;
-      const top = window.screenY + (window.outerHeight - height) / 2;
-
-      const authWindow = window.open(
-        url,
-        'github_oauth',
-        `width=${width},height=${height},left=${left},top=${top}`
-      );
-
-      if (!authWindow) {
-        toast.error("La ventana emergente fue bloqueada. Por favor, permite las ventanas emergentes.");
-      }
-    } catch (error) {
-      console.error('GitHub OAuth error:', error);
-      toast.error("Error al conectar con GitHub");
-    }
-  };
-
-  // OAuth Message Listener
-  React.useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) return;
-
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'github') {
-        setGithubUser(event.data.user);
-        toast.success(`Conectado con GitHub como ${event.data.user.login}`);
-      }
-    };
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
 
   // Auth Listener
   React.useEffect(() => {
@@ -795,10 +762,19 @@ export default function App() {
         <div className="flex-1 py-6 px-3 space-y-2 overflow-y-auto overflow-x-hidden">
           <Button 
             variant="ghost" 
+            className={`w-full justify-start h-11 px-3 ${activeTab === 'dashboard' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+            onClick={() => setActiveTab('dashboard')}
+          >
+            <LayoutDashboard className={`w-5 h-5 shrink-0 ${activeTab === 'dashboard' ? 'text-amber-500' : ''}`} />
+            {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Dashboard</span>}
+          </Button>
+
+          <Button 
+            variant="ghost" 
             className={`w-full justify-start h-11 px-3 ${activeTab === 'gallery' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
             onClick={() => setActiveTab('gallery')}
           >
-            <Layout className={`w-5 h-5 shrink-0 ${activeTab === 'gallery' ? 'text-amber-500' : ''}`} />
+            <ImageIcon className={`w-5 h-5 shrink-0 ${activeTab === 'gallery' ? 'text-amber-500' : ''}`} />
             {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Galería</span>}
           </Button>
           
@@ -823,19 +799,6 @@ export default function App() {
           >
             <Zap className="w-5 h-5 shrink-0 text-purple-500" />
             {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Planes</span>}
-          </Button>
-
-          <Button 
-            variant="ghost" 
-            className={`w-full justify-start h-11 px-3 ${githubUser ? 'text-green-500' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
-            onClick={handleConnectGitHub}
-          >
-            <Github className="w-5 h-5 shrink-0" />
-            {isSidebarOpen && (
-              <span className="ml-3 text-xs font-bold uppercase tracking-wider truncate">
-                {githubUser ? githubUser.login : 'GitHub'}
-              </span>
-            )}
           </Button>
         </div>
 
@@ -918,236 +881,281 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.2 }}
               >
-                {activeTab === 'gallery' ? (
-          <div className="space-y-12">
-            {!user ? (
-              /* Landing Page for non-logged users */
-              <div className="max-w-4xl mx-auto text-center space-y-8 py-12">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-bold uppercase tracking-widest"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  Tecnología Aura v1.2
-                </motion.div>
-                <h2 className="text-5xl md:text-7xl font-light tracking-tight text-white leading-tight">
-                  La luz perfecta para cada <span className="text-amber-500 italic font-medium">fotografía</span>.
-                </h2>
-                <p className="text-zinc-400 text-lg max-w-2xl mx-auto leading-relaxed">
-                  Aura Lab es el laboratorio digital definitivo para fotógrafos. Ajusta la iluminación, recupera sombras y realza detalles con precisión profesional.
-                </p>
-                <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
-                  <Button 
-                    size="lg" 
-                    className="bg-white text-black hover:bg-zinc-200 h-14 px-8 text-sm font-bold uppercase tracking-wider"
-                    onClick={handleLogin}
-                  >
-                    Empezar Gratis
-                  </Button>
-                  <Button 
-                    size="lg" 
-                    variant="outline" 
-                    className="border-zinc-800 text-zinc-400 hover:bg-zinc-900 h-14 px-8 text-sm font-bold uppercase tracking-wider"
-                    onClick={() => setShowPricing(true)}
-                  >
-                    Ver Planes
-                  </Button>
-                </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8 pt-12">
-                  {[
-                    { icon: Sun, title: "Luz Natural", desc: "Algoritmos que respetan la física de la luz." },
-                    { icon: Zap, title: "Procesado Rápido", desc: "Resultados instantáneos en alta resolución." },
-                    { icon: ShieldCheck, title: "Galería Privada", desc: "Tus proyectos seguros y siempre disponibles." }
-                  ].map((feature, i) => (
-                    <div key={i} className="p-6 rounded-2xl bg-zinc-900/30 border border-zinc-900 space-y-3">
-                      <feature.icon className="w-6 h-6 text-amber-500 mx-auto" />
-                      <h4 className="text-white font-bold text-sm uppercase tracking-wider">{feature.title}</h4>
-                      <p className="text-zinc-500 text-xs leading-relaxed">{feature.desc}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              /* Dashboard for logged users */
-              <div className="space-y-12">
-                {/* Dashboard Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <Card className="bg-zinc-900/50 border-zinc-800 p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
-                        <ImageIcon className="w-5 h-5 text-amber-500" />
-                      </div>
-                      <div>
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Total Fotos</p>
-                        <p className="text-xl font-bold text-white">{photos.length}</p>
-                      </div>
-                    </div>
-                  </Card>
-                  <Card className="bg-zinc-900/50 border-zinc-800 p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
-                        <HardDrive className="w-5 h-5 text-blue-500" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Espacio</p>
-                        <div className="flex items-end justify-between">
-                          <p className="text-xl font-bold text-white">{(userProfile?.storageUsed || 0) / (1024 * 1024) < 1 ? '0' : ((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)}MB</p>
-                          <p className="text-[9px] text-zinc-500 mb-1">de {userProfile?.plan === 'studio' ? '1TB' : userProfile?.plan === 'pro' ? '50GB' : '2GB'}</p>
+                {activeTab === 'dashboard' ? (
+                  <div className="space-y-12">
+                    {!user ? (
+                      /* Landing Page for non-logged users */
+                      <div className="max-w-4xl mx-auto text-center space-y-8 py-12">
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-bold uppercase tracking-widest"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          Tecnología Aura v1.2
+                        </motion.div>
+                        <h2 className="text-5xl md:text-7xl font-light tracking-tight text-white leading-tight">
+                          La luz perfecta para cada <span className="text-amber-500 italic font-medium">fotografía</span>.
+                        </h2>
+                        <p className="text-zinc-400 text-lg max-w-2xl mx-auto leading-relaxed">
+                          Aura Lab es el laboratorio digital definitivo para fotógrafos. Ajusta la iluminación, recupera sombras y realza detalles con precisión profesional.
+                        </p>
+                        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+                          <Button 
+                            size="lg" 
+                            className="bg-white text-black hover:bg-zinc-200 h-14 px-8 text-sm font-bold uppercase tracking-wider"
+                            onClick={handleLogin}
+                          >
+                            Empezar Gratis
+                          </Button>
+                          <Button 
+                            size="lg" 
+                            variant="outline" 
+                            className="border-zinc-800 text-zinc-400 hover:bg-zinc-900 h-14 px-8 text-sm font-bold uppercase tracking-wider"
+                            onClick={() => setShowPricing(true)}
+                          >
+                            Ver Planes
+                          </Button>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 pt-12">
+                          {[
+                            { icon: Sun, title: "Luz Natural", desc: "Algoritmos que respetan la física de la luz." },
+                            { icon: Zap, title: "Procesado Rápido", desc: "Resultados instantáneos en alta resolución." },
+                            { icon: ShieldCheck, title: "Galería Privada", desc: "Tus proyectos seguros y siempre disponibles." }
+                          ].map((feature, i) => (
+                            <div key={i} className="p-6 rounded-2xl bg-zinc-900/30 border border-zinc-900 space-y-3">
+                              <feature.icon className="w-6 h-6 text-amber-500 mx-auto" />
+                              <h4 className="text-white font-bold text-sm uppercase tracking-wider">{feature.title}</h4>
+                              <p className="text-zinc-500 text-xs leading-relaxed">{feature.desc}</p>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    </div>
-                  </Card>
-                  <Card className="bg-zinc-900/50 border-zinc-800 p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
-                        <Zap className="w-5 h-5 text-purple-500" />
-                      </div>
-                      <div>
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Plan Activo</p>
-                        <p className="text-xl font-bold text-white uppercase">{userProfile?.plan || 'Free'}</p>
-                      </div>
-                    </div>
-                  </Card>
-                  <Card className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-colors" onClick={() => setShowPricing(true)}>
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">
-                        <ShieldCheck className="w-5 h-5 text-green-500" />
-                      </div>
-                      <div>
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Suscripción</p>
-                        <p className="text-xs font-medium text-green-500">Gestionar Plan →</p>
-                      </div>
-                    </div>
-                  </Card>
-                </div>
-
-                {/* Upload Section */}
-                <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-12 text-center space-y-6">
-                  <div className="space-y-2">
-                    <h3 className="text-2xl font-bold text-white">Tu Laboratorio de Luz</h3>
-                    <p className="text-zinc-400 text-sm max-w-md mx-auto">
-                      Sube tus fotografías para empezar a ajustar la iluminación con tecnología Aura.
-                    </p>
-                  </div>
-                  <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-lg mx-auto">
-                    <input 
-                      type="text" 
-                      placeholder="Pega el enlace de tu foto aquí..." 
-                      className="flex-1 w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-amber-500 transition-colors"
-                      value={newPhotoUrl}
-                      onChange={(e) => setNewPhotoUrl(e.target.value)}
-                    />
-                    <Button onClick={handleUrlAdd} className="w-full sm:w-auto bg-amber-600 hover:bg-amber-500 text-white h-11 px-6">
-                      <Plus className="w-4 h-4 mr-2" />
-                      Añadir Foto
-                    </Button>
-                  </div>
-                  <div className="flex items-center justify-center gap-4 text-[10px] text-zinc-600 font-bold uppercase tracking-widest">
-                    <span>O</span>
-                    <div className="h-px w-8 bg-zinc-800" />
-                    <button 
-                      onClick={() => fileInputRef.current?.click()}
-                      className="text-amber-500 hover:text-amber-400 transition-colors"
-                    >
-                      Subir archivo local
-                    </button>
-                    <input type="file" ref={fileInputRef} className="hidden" accept="image/*,.arw,.cr2,.nef,.dng,.orf,.raf" onChange={handleFileUpload} />
-                  </div>
-
-                  {isUploading && (
-                    <div className="max-w-md mx-auto space-y-2 pt-4">
-                      <div className="flex items-center justify-between text-[10px] uppercase font-bold text-amber-500">
-                        <span className="flex items-center gap-2">
-                          <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }}>
-                            <RotateCcw className="w-3 h-3" />
-                          </motion.div>
-                          Subiendo a la nube...
-                        </span>
-                        <span>{Math.round(uploadProgress)}%</span>
-                      </div>
-                      <Progress value={uploadProgress} className="h-1 bg-zinc-800" />
-                    </div>
-                  )}
-                </div>
-
-                {/* Gallery Grid */}
-                <div className="space-y-6">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Tus Fotografías</h4>
-                    <div className="h-px flex-1 bg-zinc-900 mx-4 hidden sm:block"></div>
-                  </div>
-                  
-                  {photos.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                      {photos.map((photo) => (
-                        <motion.div
-                          key={photo.id}
-                          layoutId={photo.id}
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className="group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-amber-500/50 transition-all shadow-2xl"
-                        >
-                          <div className="w-full h-full relative">
-                            {photo.thumbnailUrl || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url) ? (
-                              <img 
-                                src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
-                                alt={photo.title}
-                                className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                                style={{ filter: getFilterString(photo.settings) }}
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-800 text-zinc-500">
-                                <ImageIcon className="w-12 h-12 mb-2 opacity-20" />
-                                <span className="text-[10px] font-bold uppercase tracking-widest">RAW File</span>
-                                <span className="text-[8px] opacity-50 mt-1">Generando miniatura...</span>
+                    ) : (
+                      /* Dashboard for logged users */
+                      <div className="space-y-12">
+                        {/* Dashboard Stats */}
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <Card 
+                            className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                            onClick={() => setActiveTab('gallery')}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                                <ImageIcon className="w-5 h-5 text-amber-500" />
                               </div>
-                            )}
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Total Fotos</p>
+                                <p className="text-xl font-bold text-white">{photos.length}</p>
+                                <p className="text-[8px] text-amber-500/70 font-bold uppercase mt-1">Entrar a Galería →</p>
+                              </div>
+                            </div>
+                          </Card>
+                          <Card 
+                            className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                            onClick={() => setShowStorageModal(true)}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                                <HardDrive className="w-5 h-5 text-blue-500" />
+                              </div>
+                              <div className="flex-1">
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Espacio</p>
+                                <div className="flex items-end justify-between">
+                                  <p className="text-xl font-bold text-white">{(userProfile?.storageUsed || 0) / (1024 * 1024) < 1 ? '0' : ((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)}MB</p>
+                                  <p className="text-[9px] text-zinc-500 mb-1">de {userProfile?.plan === 'studio' ? '1TB' : userProfile?.plan === 'pro' ? '50GB' : '2GB'}</p>
+                                </div>
+                                <p className="text-[8px] text-blue-500/70 font-bold uppercase mt-1">Ver Almacenamiento →</p>
+                              </div>
+                            </div>
+                          </Card>
+                          <Card 
+                            className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                            onClick={() => setShowPricing(true)}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
+                                <Zap className="w-5 h-5 text-purple-500" />
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Plan Activo</p>
+                                <p className="text-xl font-bold text-white uppercase">{userProfile?.plan || 'Free'}</p>
+                                <p className="text-[8px] text-purple-500/70 font-bold uppercase mt-1">Ver Planes →</p>
+                              </div>
+                            </div>
+                          </Card>
+                          <Card className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]" onClick={() => setShowPricing(true)}>
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">
+                                <ShieldCheck className="w-5 h-5 text-green-500" />
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Suscripción</p>
+                                <p className="text-xs font-medium text-green-500">Gestionar Plan →</p>
+                              </div>
+                            </div>
+                          </Card>
+                        </div>
+
+                        {/* Upload Section */}
+                        <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-12 text-center space-y-6">
+                          <div className="space-y-2">
+                            <h3 className="text-2xl font-bold text-white">Tu Laboratorio de Luz</h3>
+                            <p className="text-zinc-400 text-sm max-w-md mx-auto">
+                              Sube tus fotografías para empezar a ajustar la iluminación con tecnología Aura.
+                            </p>
                           </div>
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4">
-                            <h5 className="text-white font-bold text-sm mb-1">{photo.title}</h5>
-                            <div className="flex items-center gap-2">
-                              <Button 
-                                size="sm" 
-                                className="flex-1 bg-white text-black hover:bg-zinc-200 h-8 text-[10px] uppercase font-bold"
-                                onClick={() => {
-                                  setSelectedPhotoId(photo.id);
-                                  setActiveTab('editor');
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-lg mx-auto">
+                            <input 
+                              type="text" 
+                              placeholder="Pega el enlace de tu foto aquí..." 
+                              className="flex-1 w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-amber-500 transition-colors"
+                              value={newPhotoUrl}
+                              onChange={(e) => setNewPhotoUrl(e.target.value)}
+                            />
+                            <Button onClick={handleUrlAdd} className="w-full sm:w-auto bg-amber-600 hover:bg-amber-500 text-white h-11 px-6">
+                              <Plus className="w-4 h-4 mr-2" />
+                              Añadir Foto
+                            </Button>
+                          </div>
+                          <div className="flex items-center justify-center gap-4 text-[10px] text-zinc-600 font-bold uppercase tracking-widest">
+                            <span>O</span>
+                            <div className="h-px w-8 bg-zinc-800" />
+                            <button 
+                              onClick={() => fileInputRef.current?.click()}
+                              className="text-amber-500 hover:text-amber-400 transition-colors"
+                            >
+                              Subir archivo local
+                            </button>
+                            <input type="file" ref={fileInputRef} className="hidden" accept="image/*,.arw,.cr2,.nef,.dng,.orf,.raf" onChange={handleFileUpload} />
+                          </div>
+
+                          {isUploading && (
+                            <div className="max-w-md mx-auto space-y-2 pt-4">
+                              <div className="flex items-center justify-between text-[10px] uppercase font-bold text-amber-500">
+                                <span className="flex items-center gap-2">
+                                  <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }}>
+                                    <RotateCcw className="w-3 h-3" />
+                                  </motion.div>
+                                  Subiendo a la nube...
+                                </span>
+                                <span>{Math.round(uploadProgress)}%</span>
+                              </div>
+                              <Progress value={uploadProgress} className="h-1 bg-zinc-800" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : activeTab === 'gallery' ? (
+                  /* Gallery View */
+                  <div className="space-y-8">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <h3 className="text-2xl font-bold text-white">Tu Galería</h3>
+                        <p className="text-zinc-500 text-sm">Gestiona y edita tus capturas.</p>
+                      </div>
+                      <Button 
+                        variant="outline" 
+                        className="border-zinc-800 text-zinc-400 hover:bg-zinc-900"
+                        onClick={() => setActiveTab('dashboard')}
+                      >
+                        <LayoutDashboard className="w-4 h-4 mr-2" />
+                        Dashboard
+                      </Button>
+                    </div>
+
+                    {/* Gallery Grid */}
+                    <div className="space-y-6">
+                      {photos.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                          {photos.map((photo) => (
+                            <motion.div
+                              key={photo.id}
+                              layoutId={photo.id}
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-amber-500/50 transition-all shadow-2xl"
+                            >
+                              <div className="w-full h-full relative">
+                                {(photo.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url) ? (
+                                  <img 
+                                    src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
+                                    alt={photo.title}
+                                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                                    style={{ 
+                                      filter: getFilterString(photo.settings),
+                                      transform: `rotate(${photo.settings.rotation}deg) scaleX(${photo.settings.flipX ? -1 : 1}) scaleY(${photo.settings.flipY ? -1 : 1})`
+                                    }}
+                                    referrerPolicy="no-referrer"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-800 text-zinc-500">
+                                    <ImageIcon className="w-12 h-12 mb-2 opacity-20" />
+                                    <span className="text-[10px] font-bold uppercase tracking-widest">RAW File</span>
+                                    <span className="text-[8px] opacity-50 mt-1">Generando miniatura...</span>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4">
+                                <h5 className="text-white font-bold text-sm mb-1">{photo.title}</h5>
+                                <div className="flex items-center gap-2">
+                                  <Button 
+                                    size="sm" 
+                                    className="flex-1 bg-white text-black hover:bg-zinc-200 h-8 text-[10px] uppercase font-bold"
+                                    onClick={() => {
+                                      setSelectedPhotoId(photo.id);
+                                      setActiveTab('editor');
+                                    }}
+                                  >
+                                    Editar Luz
+                                  </Button>
+                                  <Button 
+                                    size="icon" 
+                                    variant="destructive" 
+                                    className="h-8 w-8 shadow-lg shadow-red-900/20"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (confirm("¿Eliminar esta fotografía?")) {
+                                        deletePhoto(photo.id);
+                                      }
+                                    }}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                              {/* Quick Delete Button (Always Visible on Mobile/Small Screens) */}
+                              <button 
+                                className="absolute top-2 right-2 p-2 bg-black/50 backdrop-blur-md rounded-full text-white/50 hover:text-red-500 sm:hidden transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm("¿Eliminar esta fotografía?")) {
+                                    deletePhoto(photo.id);
+                                  }
                                 }}
                               >
-                                Editar Luz
-                              </Button>
-                              <Button 
-                                size="icon" 
-                                variant="destructive" 
-                                className="h-8 w-8"
-                                onClick={() => deletePhoto(photo.id)}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </motion.div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-32 border-2 border-dashed border-zinc-900 rounded-3xl">
+                          <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6">
+                            <ImageIcon className="w-8 h-8 text-zinc-700" />
                           </div>
-                        </motion.div>
-                      ))}
+                          <h4 className="text-white font-bold text-lg mb-2">Tu galería está vacía</h4>
+                          <p className="text-zinc-500 text-sm max-w-xs mx-auto">
+                            Empieza subiendo tu primera fotografía para verla aquí.
+                          </p>
+                        </div>
+                      )}
                     </div>
-                  ) : (
-                    <div className="text-center py-32 border-2 border-dashed border-zinc-900 rounded-3xl">
-                      <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6">
-                        <ImageIcon className="w-8 h-8 text-zinc-700" />
-                      </div>
-                      <h4 className="text-white font-bold text-lg mb-2">Tu galería está vacía</h4>
-                      <p className="text-zinc-500 text-sm max-w-xs mx-auto">
-                        Empieza subiendo tu primera fotografía para verla aquí.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
+                  </div>
+                ) : (
           /* Editor View (Lightroom Style) */
           <div className="fixed inset-0 top-16 bg-zinc-950 flex flex-col lg:flex-row overflow-hidden z-40">
             {/* Main Editor Area */}
@@ -1205,6 +1213,15 @@ export default function App() {
                       Reset
                     </Button>
                     <Button 
+                      variant="destructive" 
+                      size="sm" 
+                      className="h-8 text-[10px] font-bold uppercase tracking-widest"
+                      onClick={() => selectedPhoto && confirm("¿Estás seguro de eliminar esta foto?") && deletePhoto(selectedPhoto.id)}
+                    >
+                      <Trash2 className="w-3 h-3 mr-2" />
+                      Eliminar
+                    </Button>
+                    <Button 
                       size="sm" 
                       className="h-8 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold uppercase tracking-widest shadow-lg shadow-amber-600/20"
                       onClick={() => selectedPhoto && downloadImage()}
@@ -1242,7 +1259,7 @@ export default function App() {
                         height: '100%'
                       }}
                     >
-                        {selectedPhoto.thumbnailUrl || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) ? (
+                        {(selectedPhoto.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) ? (
                           <div className="relative max-w-full max-h-full flex items-center justify-center">
                             <img 
                               src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
@@ -1342,6 +1359,64 @@ export default function App() {
   </div>
 
   <Toaster position="bottom-right" theme="dark" />
+
+      {/* Storage Modal */}
+      <Dialog open={showStorageModal} onOpenChange={setShowStorageModal}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold uppercase tracking-widest flex items-center gap-2">
+              <HardDrive className="w-5 h-5 text-blue-500" />
+              Estado del Almacenamiento
+            </DialogTitle>
+            <DialogDescription className="text-zinc-500">
+              Gestiona el espacio de tu laboratorio digital.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-6 space-y-6">
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                <span className="text-zinc-500">Espacio Utilizado</span>
+                <span className="text-white">
+                  {((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)} MB / 
+                  {(userProfile?.plan === 'studio' ? 1024 : userProfile?.plan === 'pro' ? 50 : 2)} GB
+                </span>
+              </div>
+              <Progress 
+                value={((userProfile?.storageUsed || 0) / (userProfile?.plan === 'studio' ? 1024 * 1024 * 1024 * 1024 : userProfile?.plan === 'pro' ? 50 * 1024 * 1024 * 1024 : 2 * 1024 * 1024 * 1024)) * 100} 
+                className="h-2 bg-zinc-900" 
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 space-y-1">
+                <p className="text-[10px] text-zinc-500 font-bold uppercase">Fotos Totales</p>
+                <p className="text-lg font-bold">{photos.length}</p>
+              </div>
+              <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 space-y-1">
+                <p className="text-[10px] text-zinc-500 font-bold uppercase">Archivos RAW</p>
+                <p className="text-lg font-bold">{photos.filter(p => /\.(arw|cr2|nef|dng|orf|raf)$/i.test(p.url)).length}</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 flex items-start gap-3">
+              <Info className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Los archivos RAW consumen significativamente más espacio. Considera optimizar tu galería si te acercas al límite.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter className="flex flex-col sm:flex-row gap-2">
+            <Button variant="outline" className="border-zinc-800 text-zinc-400 hover:bg-zinc-900" onClick={() => setShowStorageModal(false)}>
+              Cerrar
+            </Button>
+            <Button className="bg-blue-600 hover:bg-blue-500 text-white" onClick={() => { setShowStorageModal(false); setActiveTab('gallery'); }}>
+              Gestionar en Galería
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Pricing Dialog */}
       <Dialog open={showPricing} onOpenChange={setShowPricing}>
