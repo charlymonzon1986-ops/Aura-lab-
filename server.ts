@@ -21,12 +21,15 @@ const b2 = new B2({
 });
 
 let b2Authorized = false;
+let b2DownloadUrl = '';
+
 async function authorizeB2() {
   if (b2Authorized) return;
   try {
-    await b2.authorize();
+    const response = await b2.authorize();
     b2Authorized = true;
-    console.log("✅ Backblaze B2 Authorized");
+    b2DownloadUrl = response.data.downloadUrl;
+    console.log("✅ Backblaze B2 Authorized. Download URL:", b2DownloadUrl);
   } catch (err) {
     console.error("❌ Failed to authorize Backblaze B2:", err);
   }
@@ -53,10 +56,30 @@ async function uploadToB2(buffer: Buffer, fileName: string, contentType: string)
       contentType
     });
 
-    const endpoint = process.env.B2_ENDPOINT || 'f000.backblazeb2.com';
-    return `https://${endpoint}/file/${bucketName}/${fileName}`;
+    const baseUrl = b2DownloadUrl || `https://${process.env.B2_ENDPOINT || 's3.us-east-005.backblazeb2.com'}`;
+    // We'll use a proxy route to handle private buckets and CORS
+    return `/api/b2-proxy/${fileName}`;
   } catch (err) {
     console.error("Error uploading to B2:", err);
+    throw err;
+  }
+}
+
+// Helper to download from B2 (for proxy)
+async function downloadFromB2(fileName: string) {
+  try {
+    await authorizeB2();
+    const bucketName = process.env.B2_BUCKET_NAME;
+    if (!bucketName) throw new Error("B2_BUCKET_NAME not configured");
+
+    const response = await b2.downloadFileByName({
+      bucketName,
+      fileName,
+      responseType: 'arraybuffer'
+    });
+    return response.data;
+  } catch (err) {
+    console.error("Error downloading from B2:", err);
     throw err;
   }
 }
@@ -68,14 +91,24 @@ async function deleteFromB2(fileUrl: string) {
     const bucketName = process.env.B2_BUCKET_NAME;
     if (!bucketName) return;
 
-    // Extract fileName from URL: https://endpoint/file/bucketName/fileName
-    const urlParts = fileUrl.split(`/file/${bucketName}/`);
-    if (urlParts.length < 2) return;
-    const fileName = decodeURIComponent(urlParts[1]);
+    let fileName = '';
+    if (fileUrl.includes('/api/b2-proxy/')) {
+      fileName = fileUrl.split('/api/b2-proxy/')[1];
+    } else {
+      // Extract fileName from URL: https://endpoint/file/bucketName/fileName
+      const urlParts = fileUrl.split(`/file/${bucketName}/`);
+      if (urlParts.length < 2) return;
+      fileName = decodeURIComponent(urlParts[1]);
+    }
+
+    if (!fileName) return;
+
+    const bucketResponse = await b2.getBucket({ bucketName });
+    const bucketId = bucketResponse.data.buckets[0].bucketId;
 
     // B2 delete requires fileId, so we need to find it first
     const fileInfo = await b2.listFileNames({
-      bucketId: (await b2.getBucket({ bucketName })).data.buckets[0].bucketId,
+      bucketId,
       startFileName: fileName,
       maxFileCount: 1,
       prefix: fileName
@@ -161,6 +194,39 @@ async function startServer() {
 
   app.post("/api/ping-post", (req, res) => {
     res.json({ status: "ok", receivedBody: req.body });
+  });
+
+  // B2 Proxy Route
+  app.get("/api/b2-proxy/:fileName", async (req, res) => {
+    try {
+      const { fileName } = req.params;
+      const data = await downloadFromB2(fileName);
+      
+      // Set cache headers
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      
+      // Try to determine content type
+      const ext = path.extname(fileName).toLowerCase();
+      const mimeTypes: { [key: string]: string } = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.webp': 'image/webp',
+        '.arw': 'image/x-sony-arw',
+        '.cr2': 'image/x-canon-cr2',
+        '.nef': 'image/x-nikon-nef',
+        '.dng': 'image/x-adobe-dng'
+      };
+      
+      if (mimeTypes[ext]) {
+        res.setHeader('Content-Type', mimeTypes[ext]);
+      }
+      
+      res.send(Buffer.from(data));
+    } catch (error) {
+      console.error("Proxy error:", error);
+      res.status(404).send("Not found");
+    }
   });
 
   // Mercado Pago Configuration

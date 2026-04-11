@@ -564,13 +564,13 @@ export default function App() {
       // 1. Delete from Firestore first
       await deleteDoc(doc(db, "photos", id));
       
-      // 2. Delete from Local Storage (Server)
-      if (url && url.startsWith('/uploads/')) {
+      // 2. Delete from Storage (Server/B2)
+      if (url && !url.startsWith('blob:')) {
         try {
           await axios.post("/api/delete-file", { url, thumbnailUrl });
-          console.log("Archivo local eliminado correctamente");
+          console.log("Archivo eliminado del servidor/B2 correctamente");
         } catch (localErr) {
-          console.warn("Error al eliminar archivo local (servidor):", localErr);
+          console.warn("Error al eliminar archivo del servidor/B2:", localErr);
         }
       }
       
@@ -694,7 +694,48 @@ export default function App() {
   const handleLightroomImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    toast.info("Importación de catálogo de Lightroom (Beta): Esta función estará disponible próximamente.");
+
+    try {
+      toast.loading("Leyendo catálogo de Lightroom...", { id: "lrcat-import" });
+      
+      // Load sql.js
+      const initSqlJs = (window as any).initSqlJs;
+      if (!initSqlJs) {
+        // Try to load it dynamically if not present
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/sql-wasm.js';
+        document.head.appendChild(script);
+        await new Promise((resolve) => script.onload = resolve);
+      }
+
+      const SQL = await (window as any).initSqlJs({
+        locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/${file}`
+      });
+
+      const arrayBuffer = await file.arrayBuffer();
+      const db = new SQL.Database(new Uint8Array(arrayBuffer));
+
+      // Query for images
+      // Lightroom schema: AgLibraryFile contains filenames, Adobe_images contains metadata
+      const res = db.exec("SELECT baseName, extension FROM AgLibraryFile LIMIT 100");
+      
+      if (res.length > 0) {
+        const files = res[0].values.map(v => `${v[0]}.${v[1]}`);
+        toast.success(`Se encontraron ${files.length} imágenes en el catálogo.`, { id: "lrcat-import" });
+        console.log("Imágenes encontradas en el catálogo:", files);
+        
+        // For now, we just show them in console and toast
+        // In a real app, we would match them with uploaded files
+        toast.info("Nota: Para editar estas fotos, primero debes subirlas a Aura Lab.");
+      } else {
+        toast.error("No se encontraron imágenes en este catálogo.", { id: "lrcat-import" });
+      }
+
+      db.close();
+    } catch (err) {
+      console.error("Error al importar catálogo:", err);
+      toast.error("Error al leer el catálogo de Lightroom. Asegúrate de que sea un archivo .lrcat válido.", { id: "lrcat-import" });
+    }
   };
 
   const smartEnhance = async (id: string, openEditor = false) => {
