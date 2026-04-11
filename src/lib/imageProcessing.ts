@@ -48,3 +48,22 @@ export function getFilterString(settings: LightingSettings): string {
     ${sharpening > 0 ? `blur(${sharpening / 100}px)` : ''}
   `.replace(/\s+/g, ' ').trim();
 }
+
+export const fixImageUrl = (url: string) => {
+  if (!url) return "";
+  if (url.startsWith('/uploads/') || url.startsWith('blob:') || url.startsWith('data:')) return url;
+  
+  // Google Drive Fix
+  const driveMatch = url.match(/\/(?:file\/d\/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)/);
+  if (driveMatch && driveMatch[1]) {
+    return `https://drive.google.com/uc?export=view&id=${driveMatch[1]}`;
+  }
+
+  // Dropbox Fix
+  if (url.includes("dropbox.com")) {
+    if (url.endsWith("dl=0")) return url.replace("dl=0", "raw=1");
+    if (!url.includes("raw=1") && !url.includes("dl=1")) return `${url}${url.includes('?') ? '&' : '?'}raw=1`;
+  }
+  
+  return url;
+};

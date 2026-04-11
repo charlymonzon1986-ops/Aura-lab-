@@ -2,6 +2,7 @@ import * as React from "react";
 import { motion } from "motion/react";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
+import { ColorBalance } from "./ColorBalance";
 import { 
   Sun, 
   Contrast, 
@@ -27,6 +28,7 @@ import {
 } from "lucide-react";
 import { LightingSettings, PlanType } from "@/src/types";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 interface LightingControlsProps {
   settings: LightingSettings;
@@ -78,7 +80,15 @@ export const LightingControls = React.memo(function LightingControls({
 
   const handleCommit = (key: keyof LightingSettings, value: any) => {
     const val = Array.isArray(value) ? value[0] : value;
-    onChange({ ...settings, [key]: val });
+    const newSettings = { ...localSettings, [key]: val };
+    setLocalSettings(newSettings);
+    onChange(newSettings);
+  };
+
+  const handleColorBalanceChange = (key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string) => {
+    const newSettings = { ...localSettings, [key]: value };
+    setLocalSettings(newSettings);
+    onChange(newSettings);
   };
 
   const isLocked = (requiredPlan: PlanType) => {
@@ -277,6 +287,33 @@ export const LightingControls = React.memo(function LightingControls({
         </div>
       </div>
 
+      {/* Color Balance */}
+      <div className="space-y-6 relative">
+        <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+          Color Balance
+          <div className="flex items-center gap-2">
+            {isLocked('pro') && <Badge variant="outline" className="text-amber-500 border-amber-500/20">PRO</Badge>}
+            <Palette className="w-3 h-3" />
+          </div>
+        </h4>
+        
+        <div className={isLocked('pro') ? 'opacity-20 pointer-events-none grayscale' : ''}>
+          <ColorBalance 
+            shadows={localSettings.shadowTint}
+            midtones={localSettings.midtoneTint}
+            highlights={localSettings.highlightTint}
+            onChange={handleColorBalanceChange}
+          />
+        </div>
+
+        {isLocked('pro') && (
+          <div className="absolute inset-0 top-8 flex flex-col items-center justify-center bg-zinc-950/40 backdrop-blur-[1px] rounded-lg">
+            <Lock className="w-4 h-4 text-amber-500 mb-2" />
+            <p className="text-[8px] font-black uppercase tracking-widest text-white">Plan Pro Requerido</p>
+          </div>
+        )}
+      </div>
+
       {/* Detalle y Óptica */}
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Detalle y Óptica</h4>
@@ -301,10 +338,4 @@ export const LightingControls = React.memo(function LightingControls({
   );
 });
 
-function Badge({ children, className, variant = "default" }: { children: React.ReactNode, className?: string, variant?: "default" | "outline" }) {
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${variant === 'outline' ? 'border border-zinc-800 text-zinc-500' : 'bg-amber-500 text-black'} ${className}`}>
-      {children}
-    </span>
-  );
-}
+

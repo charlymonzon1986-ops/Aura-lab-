@@ -41,6 +41,7 @@ import {
   Lock,
   CreditCard,
   CheckCircle2,
+  RotateCw,
   Trash2 as TrashIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -60,10 +61,11 @@ import { toast } from "sonner";
 import axios from "axios";
 import { LightingControls } from "@/src/components/LightingControls";
 import { Histogram } from "@/src/components/Histogram";
+import { Filmstrip } from "@/src/components/Filmstrip";
 import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
-import { getFilterString } from "@/src/lib/imageProcessing";
+import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
-import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
+import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject, getBlob } from "firebase/storage";
 import { 
   collection, 
   query, 
@@ -78,7 +80,8 @@ import {
   getDoc,
   serverTimestamp,
   orderBy,
-  limit
+  limit,
+  increment
 } from "firebase/firestore";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { Progress } from "@/components/ui/progress";
@@ -87,23 +90,8 @@ import { UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } fr
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OperationType, handleFirestoreError } from "@/src/firebase";
 
-const fixImageUrl = (url: string) => {
-  if (!url) return "";
-  if (url.startsWith('/uploads/') || url.startsWith('blob:') || url.startsWith('data:')) return url;
-  
-  // Google Drive Fix
-  const driveMatch = url.match(/\/(?:file\/d\/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)/);
-  if (driveMatch && driveMatch[1]) {
-    return `https://drive.google.com/uc?export=view&id=${driveMatch[1]}`;
-  }
-  
-  // Dropbox Fix
-  if (url.includes("dropbox.com")) {
-    if (url.endsWith("dl=0")) return url.replace("dl=0", "raw=1");
-    if (!url.includes("raw=1") && !url.includes("dl=1")) return `${url}${url.includes('?') ? '&' : '?'}raw=1`;
-  }
-
-  return url;
+const fixImageUrlLocal = (url: string) => {
+  return fixImageUrl(url);
 };
 
 // Initialize Gemini AI (Free Tier)
@@ -130,6 +118,14 @@ export default function App() {
     resetZoom();
   }, [selectedPhotoId]);
   const [isAutoEnhancing, setIsAutoEnhancing] = React.useState(false);
+  const [history, setHistory] = React.useState<Record<string, LightingSettings[]>>({});
+  const [totalStorageUsed, setTotalStorageUsed] = React.useState(0);
+
+  // Calculate total storage
+  React.useEffect(() => {
+    const total = photos.reduce((acc, p) => acc + (p.size || 0), 0);
+    setTotalStorageUsed(total);
+  }, [photos]);
   const [isUploading, setIsUploading] = React.useState(false);
   const [zoom, setZoom] = React.useState(1);
   const [pan, setPan] = React.useState({ x: 0, y: 0 });
@@ -320,7 +316,8 @@ export default function App() {
       createdAt: serverTimestamp(),
       isPublic: false,
       size: size,
-      storagePath: storagePath || null
+      storagePath: storagePath || null,
+      folderId: selectedFolderId || null
     };
 
     console.log("Intentando guardar en Firestore con datos:", {
@@ -337,7 +334,7 @@ export default function App() {
       try {
         const userDocRef = doc(db, "users", user.uid);
         await updateDoc(userDocRef, {
-          storageUsed: (userProfile.storageUsed || 0) + size
+          storageUsed: increment(size)
         });
       } catch (userUpdateErr) {
         console.warn("Error al actualizar espacio usado (no crítico):", userUpdateErr);
@@ -376,6 +373,23 @@ export default function App() {
       return;
     }
 
+    if (!userProfile) {
+      toast.error("Cargando perfil de usuario... Por favor, espera un momento.");
+      return;
+    }
+
+    // Pre-upload storage check
+    const currentLimit = STORAGE_LIMITS[userProfile.plan];
+    if ((userProfile.storageUsed || 0) + file.size > currentLimit) {
+      toast.error("Has alcanzado el límite de almacenamiento de tu plan", {
+        action: {
+          label: "Mejorar Plan",
+          onClick: () => setShowPricing(true)
+        }
+      });
+      return;
+    }
+
     console.log("Starting upload for file:", {
       name: file.name,
       size: file.size,
@@ -403,30 +417,44 @@ export default function App() {
     console.log("Bucket:", storageRef.bucket);
 
     try {
-      console.log("Iniciando subida vía servidor (Almacenamiento Local)...");
+      console.log("Iniciando subida directa a Firebase Storage...");
       
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("userId", user.uid);
-      formData.append("path", storagePath);
+      const uploadTask = uploadBytesResumable(storageRef, file);
 
-      const response = await axios.post("/api/upload", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        onUploadProgress: (progressEvent) => {
-          const progress = Math.round((progressEvent.loaded * 100) / (progressEvent.total || file.size));
+      uploadTask.on('state_changed', 
+        (snapshot) => {
+          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
           setUploadProgress(progress);
+        }, 
+        (error) => {
+          console.error("Error en subida a Firebase Storage:", error);
+          toast.error("Error al subir el archivo a Firebase Storage");
+          setIsUploading(false);
+        }, 
+        async () => {
+          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          console.log("Subida exitosa. URL recibida:", downloadURL);
+          
+          // If it's RAW, we still need the server to generate a thumbnail
+          let finalThumbnailUrl = undefined;
+          if (isRaw) {
+            try {
+              const formData = new FormData();
+              formData.append("file", file);
+              const thumbRes = await axios.post("/api/process-raw-thumb", formData);
+              finalThumbnailUrl = thumbRes.data.thumbnailUrl;
+            } catch (thumbErr) {
+              console.warn("No se pudo generar miniatura para RAW:", thumbErr);
+            }
+          }
+
+          await addPhoto(downloadURL, file.name, file.size, storagePath, finalThumbnailUrl);
+          setIsUploading(false);
+          setUploadProgress(0);
+          if (fileInputRef.current) fileInputRef.current.value = "";
+          toast.success("Foto subida correctamente");
         }
-      });
-
-      const { url, thumbnailUrl } = response.data;
-      console.log("Subida exitosa. URL recibida:", url);
-
-      await addPhoto(url, file.name, file.size, storagePath, thumbnailUrl);
-      
-      setIsUploading(false);
-      setUploadProgress(0);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      toast.success("Archivo subido correctamente");
+      );
     } catch (error: any) {
       console.error("Error en la subida:", error);
       setIsUploading(false);
@@ -450,6 +478,19 @@ export default function App() {
   const updatePhotoSettings = React.useCallback((id: string, settings: LightingSettings) => {
     // Update local state for immediate feedback
     setPhotos(prev => prev.map(p => p.id === id ? { ...p, settings } : p));
+    
+    // Add to history
+    setHistory(prev => {
+      const photoHistory = prev[id] || [];
+      // Only add if settings are different from the last one
+      const lastSettings = photoHistory[photoHistory.length - 1];
+      if (JSON.stringify(lastSettings) === JSON.stringify(settings)) return prev;
+      
+      return {
+        ...prev,
+        [id]: [...photoHistory, settings].slice(-20) // Keep last 20 steps
+      };
+    });
   }, []);
 
   // Debounced Firestore sync
@@ -553,7 +594,7 @@ export default function App() {
       // 4. Update storage used in profile
       const userDocRef = doc(db, "users", user.uid);
       await updateDoc(userDocRef, {
-        storageUsed: Math.max(0, (userProfile.storageUsed || 0) - photoSize)
+        storageUsed: increment(-photoSize)
       });
 
       setSelectedPhotoId(null);
@@ -673,9 +714,15 @@ export default function App() {
       toast.loading("Analizando imagen con IA...", { id: "ai-enhance" });
       
       // Get the image data
-      const imageUrl = fixImageUrl(photo.url);
-      const response = await fetch(imageUrl);
-      const blob = await response.blob();
+      let blob: Blob;
+      if (photo.storagePath) {
+        const storageRef = ref(storage, photo.storagePath);
+        blob = await getBlob(storageRef);
+      } else {
+        const imageUrl = fixImageUrl(photo.url);
+        const response = await fetch(imageUrl);
+        blob = await response.blob();
+      }
       
       // Convert to base64
       const reader = new FileReader();
@@ -1039,8 +1086,16 @@ export default function App() {
                               <div className="flex-1">
                                 <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Espacio</p>
                                 <div className="flex items-end justify-between">
-                                  <p className="text-xl font-bold text-white">{(userProfile?.storageUsed || 0) / (1024 * 1024) < 1 ? '0' : ((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)}MB</p>
+                                  <p className="text-xl font-bold text-white">{(totalStorageUsed / (1024 * 1024)).toFixed(1)}MB</p>
                                   <p className="text-[9px] text-zinc-500 mb-1">de {userProfile?.plan === 'studio' ? '1TB' : userProfile?.plan === 'pro' ? '50GB' : '2GB'}</p>
+                                </div>
+                                <div className="mt-2 h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-blue-500 transition-all duration-500" 
+                                    style={{ 
+                                      width: `${Math.min(100, (totalStorageUsed / ( (userProfile?.plan === 'studio' ? 1024 : userProfile?.plan === 'pro' ? 50 : 2) * 1024 * 1024 * 1024)) * 100)}%` 
+                                    }} 
+                                  />
                                 </div>
                                 <p className="text-[8px] text-blue-500/70 font-bold uppercase mt-1">Ver Almacenamiento →</p>
                               </div>
@@ -1135,11 +1190,9 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-2">
                         <label className="cursor-pointer">
-                          <Button variant="outline" className="border-zinc-800 text-zinc-400 hover:bg-zinc-900" asChild>
-                            <span>
-                              <FileJson className="w-4 h-4 mr-2" />
-                              Importar Lightroom
-                            </span>
+                          <Button variant="outline" className="border-zinc-800 text-zinc-400 hover:bg-zinc-900">
+                            <FileJson className="w-4 h-4 mr-2" />
+                            Importar Lightroom
                           </Button>
                           <input type="file" className="hidden" accept=".lrcat" onChange={handleLightroomImport} />
                         </label>
@@ -1277,199 +1330,233 @@ export default function App() {
                   </div>
                 ) : (
           /* Editor View (Lightroom Style) */
-          <div className="fixed inset-0 top-16 bg-zinc-950 flex flex-col lg:flex-row overflow-hidden z-40">
-            {/* Main Editor Area */}
-            <div className="flex-1 relative flex flex-col overflow-hidden bg-zinc-950">
-              <div className="flex items-center justify-between">
+          <div className="fixed inset-0 top-16 bg-zinc-950 flex flex-col overflow-hidden z-40">
+            {/* Top Toolbar */}
+            <div className="h-14 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-xl flex items-center justify-between px-6 z-20">
+              <div className="flex items-center gap-6">
                 <Button 
                   variant="ghost" 
                   size="sm" 
-                  onClick={() => setActiveTab('gallery')}
-                  className="text-zinc-500 hover:text-white"
+                  className="text-zinc-400 hover:text-white gap-2"
+                  onClick={() => {
+                    setSelectedPhotoId(null);
+                    setActiveTab('gallery');
+                  }}
                 >
-                  ← Volver a Galería
+                  <ChevronLeft className="w-4 h-4" />
+                  Biblioteca
                 </Button>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-1 bg-zinc-900/50 p-1 rounded-lg border border-zinc-800">
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-7 w-7 text-zinc-500 hover:text-white"
-                      onClick={() => setZoom(Math.max(0.1, zoom - 0.1))}
-                    >
-                      <ZoomOut className="w-3.5 h-3.5" />
-                    </Button>
-                    <span className="text-[10px] font-mono text-zinc-500 min-w-[40px] text-center">
-                      {Math.round(zoom * 100)}%
-                    </span>
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-7 w-7 text-zinc-500 hover:text-white"
-                      onClick={() => setZoom(Math.min(5, zoom + 0.1))}
-                    >
-                      <ZoomIn className="w-3.5 h-3.5" />
-                    </Button>
-                    <div className="w-px h-3 bg-zinc-800 mx-1" />
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-7 w-7 text-zinc-500 hover:text-white"
-                      onClick={resetZoom}
-                      title="Ajustar a pantalla"
-                    >
-                      <Maximize2 className="w-3.5 h-3.5" />
-                    </Button>
+                <div className="h-4 w-[1px] bg-zinc-800" />
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] uppercase font-black">Revelar</Badge>
+                  <span className="text-xs font-bold text-zinc-300 uppercase tracking-widest">{selectedPhoto?.title}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center bg-zinc-900 rounded-lg p-1 mr-4">
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}><ZoomOut className="w-3.5 h-3.5" /></Button>
+                  <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.min(5, z + 0.1))}><ZoomIn className="w-3.5 h-3.5" /></Button>
+                </div>
+                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && smartEnhance(selectedPhoto.id)}>
+                  <Sparkles className="w-3 h-3 text-amber-500" />
+                  IA Smart
+                </Button>
+                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
+                  <RotateCcw className="w-3 h-3" />
+                  Reset
+                </Button>
+                <Button className="h-8 bg-white text-black hover:bg-zinc-200 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && downloadImage()}>
+                  <Download className="w-3 h-3" />
+                  Exportar
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex-1 flex overflow-hidden relative">
+              {/* Left Sidebar: Presets & History */}
+              <div className="w-64 border-r border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden hidden lg:flex">
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Navegador</h4>
+                    <div className="aspect-video bg-zinc-900 rounded-lg overflow-hidden relative border border-zinc-800">
+                      {selectedPhoto && (
+                        <img 
+                          src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          className="w-full h-full object-cover opacity-50"
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
+                      <div className="absolute border border-amber-500/50 bg-amber-500/5 pointer-events-none" 
+                        style={{ 
+                          width: `${100/zoom}%`, 
+                          height: `${100/zoom}%`,
+                          left: `${50 - (pan.x/100)}%`,
+                          top: `${50 - (pan.y/100)}%`,
+                          transform: 'translate(-50%, -50%)'
+                        }} 
+                      />
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="h-8 border-zinc-800 text-zinc-400 hover:bg-zinc-900 text-[10px] font-bold uppercase tracking-widest"
-                      onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}
-                    >
-                      <RotateCcw className="w-3 h-3 mr-2" />
-                      Reset
-                    </Button>
-                    <Button 
-                      variant="destructive" 
-                      size="sm" 
-                      className="h-8 text-[10px] font-bold uppercase tracking-widest"
-                      onClick={() => selectedPhoto && confirm("¿Estás seguro de eliminar esta foto?") && deletePhoto(selectedPhoto.id)}
-                    >
-                      <Trash2 className="w-3 h-3 mr-2" />
-                      Eliminar
-                    </Button>
-                    <Button 
-                      size="sm" 
-                      className="h-8 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold uppercase tracking-widest shadow-lg shadow-amber-600/20"
-                      onClick={() => selectedPhoto && downloadImage()}
-                    >
-                      <Download className="w-3 h-3 mr-2" />
-                      Exportar
-                    </Button>
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Presets Rápidos</h4>
+                    <div className="space-y-1">
+                      {SYSTEM_PRESETS.slice(0, 8).map(preset => (
+                        <Button 
+                          key={preset.id}
+                          variant="ghost"
+                          size="sm"
+                          className="w-full justify-start h-8 text-[10px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900 px-2"
+                          onClick={() => applyPreset(preset)}
+                        >
+                          {preset.name}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Mis Ajustes</h4>
+                    <div className="space-y-1">
+                      {userPresets.map(preset => (
+                        <Button 
+                          key={preset.id}
+                          variant="ghost"
+                          size="sm"
+                          className="w-full justify-start h-8 text-[10px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900 px-2"
+                          onClick={() => applyPreset(preset)}
+                        >
+                          {preset.name}
+                        </Button>
+                      ))}
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="w-full h-8 border-dashed border-zinc-800 text-[9px] uppercase font-bold tracking-widest text-zinc-600 mt-2"
+                        onClick={() => saveCurrentAsPreset()}
+                      >
+                        <Plus className="w-3 h-3 mr-2" />
+                        Crear Nuevo
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Historial</h4>
+                    <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar pr-2">
+                      {selectedPhotoId && history[selectedPhotoId]?.length > 0 ? (
+                        [...history[selectedPhotoId]].reverse().map((step, idx) => (
+                          <Button 
+                            key={idx}
+                            variant="ghost"
+                            size="sm"
+                            className="w-full justify-start h-8 text-[9px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900 px-2"
+                            onClick={() => {
+                              setPhotos(prev => prev.map(p => p.id === selectedPhotoId ? { ...p, settings: step } : p));
+                            }}
+                          >
+                            <RotateCw className="w-3 h-3 mr-2 opacity-50" />
+                            Paso {history[selectedPhotoId].length - idx}
+                          </Button>
+                        ))
+                      ) : (
+                        <p className="text-[9px] text-zinc-700 italic px-2">Sin cambios recientes</p>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Image Stage */}
-              <div className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing"
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-                onDoubleClick={resetZoom}
-              >
-                {!selectedPhoto ? (
-                  <div className="absolute inset-0 flex items-center justify-center">
+              {/* Main Content Area */}
+              <div className="flex-1 flex flex-col overflow-hidden relative bg-[#0a0a0a]">
+                {/* Image Stage */}
+                <div className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing flex items-center justify-center"
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
+                  onDoubleClick={resetZoom}
+                >
+                  {!selectedPhoto ? (
                     <div className="text-center p-8">
                       <ImageIcon className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
                       <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
                     </div>
-                  </div>
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center p-8">
+                  ) : (
                     <motion.div 
                       layoutId={selectedPhoto.id}
                       className="relative transition-transform duration-75 ease-out flex items-center justify-center"
                       style={{ 
                         transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                        width: '100%',
-                        height: '100%'
+                        width: '90%',
+                        height: '90%'
                       }}
                     >
-                        {(selectedPhoto.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) ? (
-                          <div className="relative max-w-full max-h-full flex items-center justify-center">
-                            <img 
-                              src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                              alt={selectedPhoto.title}
-                              className="max-w-full max-h-full object-contain shadow-2xl rounded-lg select-none transition-all duration-300"
-                              style={{ 
-                                filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur))`,
-                                transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
-                                clipPath: `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`
-                              }}
-                              referrerPolicy="no-referrer"
-                              draggable={false}
-                            />
-                            {/* Vignette Overlay */}
-                            <div 
-                              className="absolute inset-0 pointer-events-none rounded-lg"
-                              style={{ 
-                                background: `radial-gradient(circle, transparent calc(100% - (var(--img-vignette) * 100%)), rgba(0,0,0,var(--img-vignette)) 100%)`
-                              }}
-                            />
-                          </div>
-                        ) : (
-                        <div className="flex flex-col items-center justify-center p-12 bg-zinc-800/50 rounded-2xl border border-zinc-700 text-center">
-                          <ImageIcon className="w-16 h-16 text-zinc-600 mb-4" />
-                          <h3 className="text-white font-bold uppercase tracking-widest text-sm">Archivo RAW Detectado</h3>
-                          <p className="text-zinc-500 text-xs mt-2 max-w-xs">
-                            Generando previsualización...
-                          </p>
-                        </div>
-                      )}
-                    </motion.div>
-                  </div>
-                )}
-              </div>
-
-              {/* Bottom Info Bar */}
-              <div className="h-10 border-t border-zinc-900 bg-zinc-950 flex items-center justify-between px-6">
-                <div className="flex items-center gap-4 text-[9px] font-mono text-zinc-600 uppercase tracking-widest">
-                  <span>{selectedPhoto?.title}</span>
-                  {selectedPhoto?.size && <span>{(selectedPhoto.size / (1024 * 1024)).toFixed(2)} MB</span>}
-                </div>
-                <div className="flex items-center gap-4 text-[9px] font-mono text-zinc-600">
-                  <span>ISO 100</span>
-                  <span>1/250s</span>
-                  <span>f/2.8</span>
-                </div>
-              </div>
-            </div>
-            {/* Sidebar Controls (Lightroom Style) */}
-            <div className={`w-full lg:w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden transition-all duration-300 ${!showControls ? 'lg:mr-[-320px]' : ''}`}>
-              <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-                {selectedPhoto && (
-                  <div className="space-y-10">
-                    {/* Histogram Section */}
-                    <div className="space-y-4">
-                      <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
-                        Histograma
-                        <Activity className="w-3 h-3" />
-                      </h4>
-                      <Histogram settings={selectedPhoto.settings} />
-                    </div>
-
-                    {/* Presets Quick Access */}
-                    <div className="space-y-4">
-                      <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Presets Rápidos</h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        {userPresets.slice(0, 4).map(preset => (
-                          <Button 
-                            key={preset.id}
-                            variant="outline"
-                            size="sm"
-                            className="h-8 border-zinc-800 text-[9px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900"
-                            onClick={() => applyPreset(preset)}
-                          >
-                            {preset.name}
-                          </Button>
-                        ))}
+                      <div className="relative max-w-full max-h-full flex items-center justify-center">
+                        <img 
+                          src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          alt={selectedPhoto.title}
+                          className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
+                          style={{ 
+                            filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur))`,
+                            transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
+                            clipPath: `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`
+                          }}
+                          referrerPolicy="no-referrer"
+                          draggable={false}
+                        />
+                        {/* Color Balance Overlays */}
+                        <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-30" style={{ backgroundColor: selectedPhoto.settings.shadowTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20" style={{ backgroundColor: selectedPhoto.settings.midtoneTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-10" style={{ backgroundColor: selectedPhoto.settings.highlightTint }} />
+                        
+                        {/* Vignette Overlay */}
+                        <div 
+                          className="absolute inset-0 pointer-events-none"
+                          style={{ 
+                            background: `radial-gradient(circle, transparent calc(100% - (var(--img-vignette) * 100%)), rgba(0,0,0,var(--img-vignette)) 100%)`
+                          }}
+                        />
                       </div>
-                    </div>
+                    </motion.div>
+                  )}
+                </div>
 
-                    {/* Main Controls */}
-                    <LightingControls 
-                      settings={selectedPhoto.settings} 
-                      onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
-                      userPlan={userProfile?.plan || 'free'}
-                      onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
-                      isAutoEnhancing={isAutoEnhancing}
-                    />
-                  </div>
-                )}
+                {/* Filmstrip */}
+                <Filmstrip 
+                  photos={photos} 
+                  selectedPhotoId={selectedPhotoId} 
+                  onSelect={setSelectedPhotoId} 
+                />
+              </div>
+
+              {/* Right Sidebar: Controls */}
+              <div className="w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden">
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
+                  {selectedPhoto && (
+                    <div className="space-y-10">
+                      {/* Histogram Section */}
+                      <div className="space-y-4">
+                        <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                          Histograma
+                          <Activity className="w-3 h-3" />
+                        </h4>
+                        <Histogram settings={selectedPhoto.settings} />
+                      </div>
+
+                      {/* Main Controls */}
+                      <LightingControls 
+                        settings={selectedPhoto.settings} 
+                        onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
+                        userPlan={userProfile?.plan || 'free'}
+                        onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
+                        isAutoEnhancing={isAutoEnhancing}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

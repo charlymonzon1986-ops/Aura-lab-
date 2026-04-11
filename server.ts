@@ -300,6 +300,37 @@ async function startServer() {
     }
   });
 
+  // Route to process RAW thumbnail for client-side uploads
+  app.post("/api/process-raw-thumb", upload.single("file"), async (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+      const timestamp = Date.now();
+      const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+      const fileName = `${timestamp}-${safeName}`;
+      const filePath = path.join(UPLOADS_DIR, fileName);
+
+      // Save temporary file to process
+      fs.writeFileSync(filePath, file.buffer);
+      
+      // Generate thumbnail
+      const thumbnailUrl = await generateThumbnail(filePath, fileName);
+      
+      // We can delete the original file after generating the thumbnail since it's already in Firebase Storage
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+
+      return res.json({ 
+        thumbnailUrl: thumbnailUrl
+      });
+    } catch (error: any) {
+      console.error("Error processing RAW thumbnail:", error);
+      return res.status(500).json({ error: "Error processing RAW thumbnail", details: error.message });
+    }
+  });
+
   // Vite middleware for development
   const isProd = process.env.NODE_ENV === "production";
   const distPath = path.join(process.cwd(), 'dist');

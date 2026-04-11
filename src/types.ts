@@ -92,6 +92,11 @@ export interface LightingSettings {
   sepia: number;
   grain: number;
   blur: number;
+  
+  // Color Balance (HSL/Wheels)
+  shadowTint: string; // hex or hsl
+  midtoneTint: string;
+  highlightTint: string;
 }
 
 export const DEFAULT_SETTINGS: LightingSettings = {
@@ -123,4 +128,7 @@ export const DEFAULT_SETTINGS: LightingSettings = {
   sepia: 0,
   grain: 0,
   blur: 0,
+  shadowTint: "transparent",
+  midtoneTint: "transparent",
+  highlightTint: "transparent",
 };
