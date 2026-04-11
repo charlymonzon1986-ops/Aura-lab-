@@ -56,9 +56,9 @@ async function uploadToB2(buffer: Buffer, fileName: string, contentType: string)
       contentType
     });
 
-    const baseUrl = b2DownloadUrl || `https://${process.env.B2_ENDPOINT || 's3.us-east-005.backblazeb2.com'}`;
+    console.log(`✅ B2 upload successful: ${fileName}`);
     // We'll use a proxy route to handle private buckets and CORS
-    return `/api/b2-proxy/${fileName}`;
+    return `/api/b2-proxy/${encodeURIComponent(fileName)}`;
   } catch (err) {
     console.error("Error uploading to B2:", err);
     throw err;
@@ -93,15 +93,16 @@ async function deleteFromB2(fileUrl: string) {
 
     let fileName = '';
     if (fileUrl.includes('/api/b2-proxy/')) {
-      fileName = fileUrl.split('/api/b2-proxy/')[1];
+      fileName = decodeURIComponent(fileUrl.split('/api/b2-proxy/')[1]);
+    } else if (fileUrl.includes(`/file/${bucketName}/`)) {
+      fileName = decodeURIComponent(fileUrl.split(`/file/${bucketName}/`)[1]);
     } else {
-      // Extract fileName from URL: https://endpoint/file/bucketName/fileName
-      const urlParts = fileUrl.split(`/file/${bucketName}/`);
-      if (urlParts.length < 2) return;
-      fileName = decodeURIComponent(urlParts[1]);
+      // Try to extract from the end of the URL if it's a direct B2 URL but format is different
+      fileName = decodeURIComponent(path.basename(fileUrl));
     }
 
     if (!fileName) return;
+    console.log(`🗑️ Attempting to delete from B2: ${fileName}`);
 
     const bucketResponse = await b2.getBucket({ bucketName });
     const bucketId = bucketResponse.data.buckets[0].bucketId;
@@ -120,7 +121,9 @@ async function deleteFromB2(fileUrl: string) {
         fileId: file.fileId,
         fileName: file.fileName
       });
-      console.log(`🗑️ B2 file deleted: ${fileName}`);
+      console.log(`✅ B2 file deleted: ${fileName}`);
+    } else {
+      console.warn(`⚠️ B2 file not found for deletion: ${fileName}`);
     }
   } catch (err) {
     console.error("Error deleting from B2:", err);
@@ -200,7 +203,10 @@ async function startServer() {
   app.get("/api/b2-proxy/:fileName", async (req, res) => {
     try {
       const { fileName } = req.params;
+      console.log(`[Proxy] Requesting: ${fileName}`);
+      
       const data = await downloadFromB2(fileName);
+      console.log(`[Proxy] Downloaded ${data.byteLength} bytes for ${fileName}`);
       
       // Set cache headers
       res.setHeader('Cache-Control', 'public, max-age=31536000');

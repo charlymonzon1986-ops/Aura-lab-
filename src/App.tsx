@@ -89,6 +89,7 @@ import { SYSTEM_PRESETS } from "@/src/constants/presets";
 import { UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } from "@/src/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OperationType, handleFirestoreError } from "@/src/firebase";
+import { parseLrtemplate, mergeWithDefaults } from "@/src/lib/lrParser";
 
 const fixImageUrlLocal = (url: string) => {
   return fixImageUrl(url);
@@ -118,6 +119,15 @@ export default function App() {
     resetZoom();
   }, [selectedPhotoId]);
   const [isAutoEnhancing, setIsAutoEnhancing] = React.useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+  const [photoToDeleteId, setPhotoToDeleteId] = React.useState<string | null>(null);
+  const [isSavingPreset, setIsSavingPreset] = React.useState(false);
+  const [isBulkImportOpen, setIsBulkImportOpen] = React.useState(false);
+  const [bulkImportPlan, setBulkImportPlan] = React.useState<PlanType>("free");
+  const [isImporting, setIsImporting] = React.useState(false);
+  const [newPresetName, setNewPresetName] = React.useState("");
+  const [newPresetIsSystem, setNewPresetIsSystem] = React.useState(false);
+  const [newPresetPlan, setNewPresetPlan] = React.useState<PlanType>("free");
   const [history, setHistory] = React.useState<Record<string, LightingSettings[]>>({});
   const [totalStorageUsed, setTotalStorageUsed] = React.useState(0);
 
@@ -277,10 +287,7 @@ export default function App() {
         id: doc.id
       })) as Preset[];
       
-      const system = allPresets.filter(p => p.isSystem);
-      const userP = allPresets.filter(p => p.userId === user?.uid && !p.isSystem);
-      
-      setUserPresets(userP);
+      setUserPresets(allPresets);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, "presets");
     });
@@ -551,10 +558,17 @@ export default function App() {
     root.style.setProperty('--img-crop-left', `${s.cropLeft}%`);
   }, [selectedPhoto?.settings]);
   const deletePhoto = async (id: string) => {
-    if (!user || !userProfile) return;
+    if (!user || !userProfile) {
+      console.warn("Delete aborted: No user or profile");
+      return;
+    }
+    console.log("Attempting to delete photo:", id);
     try {
       const photoToDelete = photos.find(p => p.id === id);
-      if (!photoToDelete) return;
+      if (!photoToDelete) {
+        console.warn("Photo not found in state:", id);
+        return;
+      }
 
       const photoSize = (photoToDelete as any)?.size || 0;
       const storagePath = (photoToDelete as any)?.storagePath;
@@ -592,6 +606,7 @@ export default function App() {
       });
 
       setSelectedPhotoId(null);
+      setPhotos(prev => prev.filter(p => p.id !== id));
       toast.success("Foto eliminada");
     } catch (error) {
       console.error("Error al eliminar la foto:", error);
@@ -599,38 +614,95 @@ export default function App() {
     }
   };
 
-  const saveCurrentAsPreset = async () => {
+  const saveCurrentAsPreset = () => {
     if (!user || !selectedPhoto) return;
-    
-    const name = prompt("Nombre del Preset:");
-    if (!name) return;
+    setNewPresetName("");
+    setNewPresetIsSystem(false);
+    setNewPresetPlan("free");
+    setIsSavingPreset(true);
+  };
 
-    const isAdmin = userProfile?.role === 'admin';
-    let isSystem = false;
-    let planRequired: PlanType = 'free';
-
-    if (isAdmin) {
-      const makeSystem = confirm("¿Deseas guardar este preset como PRESET DEL SISTEMA (disponible para otros usuarios)?");
-      if (makeSystem) {
-        isSystem = true;
-        const plan = prompt("Plan requerido para este preset (free, pro, studio):", "free");
-        planRequired = (['free', 'pro', 'studio'].includes(plan || '') ? plan : 'free') as PlanType;
-      }
+  const confirmSavePreset = async () => {
+    if (!user || !selectedPhoto || !newPresetName) {
+      toast.error("Por favor, ingresa un nombre para el preset");
+      return;
     }
 
     try {
       await addDoc(collection(db, "presets"), {
         userId: user.uid,
-        name,
-        category: isSystem ? "Sistema" : "Mis Presets",
+        name: newPresetName,
+        category: newPresetIsSystem ? "Sistema" : "Mis Presets",
         settings: selectedPhoto.settings,
         createdAt: serverTimestamp(),
-        isSystem,
-        planRequired: isSystem ? planRequired : 'free'
+        isSystem: newPresetIsSystem,
+        planRequired: newPresetIsSystem ? newPresetPlan : 'free'
       });
-      toast.success(isSystem ? "Preset del sistema guardado" : "Preset personal guardado");
+      
+      toast.success(newPresetIsSystem ? "Preset del sistema guardado" : "Preset personal guardado");
+      setIsSavingPreset(false);
+      setNewPresetName("");
     } catch (error) {
+      console.error("Error al guardar el preset:", error);
       toast.error("Error al guardar el preset");
+    }
+  };
+
+  const handleBulkImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsImporting(true);
+    let importedCount = 0;
+    let errorCount = 0;
+
+    const toastId = toast.loading(`Importando ${files.length} presets...`);
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file.name.toLowerCase().endsWith('.lrtemplate')) continue;
+
+        // Update toast with progress
+        toast.loading(`Importando ${i + 1}/${files.length}: ${file.name}`, { id: toastId });
+
+        // Get category from folder name
+        // webkitRelativePath is like "folder/subfolder/file.lrtemplate"
+        const pathParts = file.webkitRelativePath.split('/');
+        const category = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "General";
+        const name = file.name.replace(/\.lrtemplate$/i, '');
+
+        try {
+          const content = await file.text();
+          const partialSettings = parseLrtemplate(content);
+          const settings = mergeWithDefaults(partialSettings);
+
+          await addDoc(collection(db, "presets"), {
+            userId: user?.uid,
+            name,
+            category,
+            settings,
+            createdAt: serverTimestamp(),
+            isSystem: true, // Bulk imports are usually system presets
+            planRequired: bulkImportPlan
+          });
+          importedCount++;
+        } catch (err) {
+          console.error(`Error importing ${file.name}:`, err);
+          errorCount++;
+        }
+      }
+
+      toast.success(`Importación completada: ${importedCount} presets guardados.`, { id: toastId });
+      if (errorCount > 0) {
+        toast.error(`${errorCount} archivos no pudieron ser procesados.`);
+      }
+      setIsBulkImportOpen(false);
+    } catch (error) {
+      console.error("Error en importación masiva:", error);
+      toast.error("Error crítico durante la importación", { id: toastId });
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -997,6 +1069,17 @@ export default function App() {
             <Settings2 className={`w-5 h-5 shrink-0 ${activeTab === 'editor' ? 'text-amber-500' : ''}`} />
             {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Editor</span>}
           </Button>
+
+          {userProfile?.role === 'admin' && (
+            <Button 
+              variant="ghost" 
+              className={`w-full justify-start h-11 px-3 ${isBulkImportOpen ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+              onClick={() => setIsBulkImportOpen(true)}
+            >
+              <ShieldCheck className={`w-5 h-5 shrink-0 ${isBulkImportOpen ? 'text-amber-500' : ''}`} />
+              {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Admin Presets</span>}
+            </Button>
+          )}
 
           <div className="pt-4 pb-2">
             <div className={`h-px bg-zinc-900 mx-2 ${isSidebarOpen ? 'mb-4' : 'mb-2'}`} />
@@ -1383,9 +1466,8 @@ export default function App() {
                                     className="h-8 w-8 shadow-lg shadow-red-900/20"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (confirm("¿Eliminar esta fotografía?")) {
-                                        deletePhoto(photo.id);
-                                      }
+                                      setPhotoToDeleteId(photo.id);
+                                      setIsDeleteDialogOpen(true);
                                     }}
                                   >
                                     <Trash2 className="w-4 h-4" />
@@ -1397,9 +1479,8 @@ export default function App() {
                                 className="absolute top-2 right-2 p-2 bg-black/50 backdrop-blur-md rounded-full text-white/50 hover:text-red-500 sm:hidden transition-colors"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  if (confirm("¿Eliminar esta fotografía?")) {
-                                    deletePhoto(photo.id);
-                                  }
+                                  setPhotoToDeleteId(photo.id);
+                                  setIsDeleteDialogOpen(true);
                                 }}
                               >
                                 <Trash2 className="w-3 h-3" />
@@ -1492,46 +1573,67 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="space-y-4">
-                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Presets Rápidos</h4>
-                    <div className="space-y-1">
-                      {SYSTEM_PRESETS.slice(0, 8).map(preset => (
-                        <Button 
-                          key={preset.id}
-                          variant="ghost"
-                          size="sm"
-                          className="w-full justify-start h-8 text-[10px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900 px-2"
-                          onClick={() => applyPreset(preset)}
-                        >
-                          {preset.name}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Mis Ajustes</h4>
-                    <div className="space-y-1">
-                      {userPresets.map(preset => (
-                        <Button 
-                          key={preset.id}
-                          variant="ghost"
-                          size="sm"
-                          className="w-full justify-start h-8 text-[10px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900 px-2"
-                          onClick={() => applyPreset(preset)}
-                        >
-                          {preset.name}
-                        </Button>
-                      ))}
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
+                      <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600">Presets</h4>
                       <Button 
-                        variant="outline" 
-                        size="sm" 
-                        className="w-full h-8 border-dashed border-zinc-800 text-[9px] uppercase font-bold tracking-widest text-zinc-600 mt-2"
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-5 w-5 text-zinc-600 hover:text-white"
                         onClick={() => saveCurrentAsPreset()}
                       >
-                        <Plus className="w-3 h-3 mr-2" />
-                        Crear Nuevo
+                        <Plus className="w-3 h-3" />
                       </Button>
+                    </div>
+
+                    <div className="space-y-6">
+                      {/* Grouped Presets */}
+                      {(() => {
+                        const allAvailablePresets = [...SYSTEM_PRESETS, ...userPresets];
+                        const categories = Array.from(new Set(allAvailablePresets.map(p => p.category || "General")));
+                        
+                        return categories.sort().map(category => {
+                          const categoryPresets = allAvailablePresets.filter(p => (p.category || "General") === category);
+                          if (categoryPresets.length === 0) return null;
+
+                          return (
+                            <div key={category} className="space-y-2">
+                              <h5 className="text-[8px] font-bold uppercase tracking-widest text-zinc-700 px-2">{category}</h5>
+                              <div className="space-y-0.5">
+                                {categoryPresets.map(preset => {
+                                  const planLevels: Record<PlanType, number> = { free: 0, pro: 1, studio: 2 };
+                                  const userLevel = planLevels[userProfile?.plan || 'free'];
+                                  const requiredLevel = planLevels[preset.planRequired || 'free'];
+                                  const isLocked = userLevel < requiredLevel;
+
+                                  return (
+                                    <Button 
+                                      key={preset.id}
+                                      variant="ghost"
+                                      size="sm"
+                                      className={`w-full justify-between h-8 text-[10px] uppercase font-bold tracking-widest px-2 group ${
+                                        isLocked ? 'text-zinc-700' : 'text-zinc-500 hover:text-white hover:bg-zinc-900'
+                                      }`}
+                                      onClick={() => applyPreset(preset)}
+                                    >
+                                      <span className="truncate mr-2">{preset.name}</span>
+                                      {isLocked ? (
+                                        <Lock className="w-3 h-3 text-zinc-800 group-hover:text-amber-500/50 transition-colors" />
+                                      ) : (
+                                        preset.planRequired !== 'free' && (
+                                          <Badge className="h-4 px-1 text-[7px] bg-amber-500/10 text-amber-500 border-amber-500/20">
+                                            {preset.planRequired?.toUpperCase()}
+                                          </Badge>
+                                        )
+                                      )}
+                                    </Button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
 
@@ -1884,6 +1986,177 @@ export default function App() {
                 Tu suscripción se renovará automáticamente. Puedes cancelar o cambiar de plan en cualquier momento desde tu perfil.
               </p>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Save Preset Dialog */}
+      <Dialog open={isSavingPreset} onOpenChange={setIsSavingPreset}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <Save className="w-5 h-5 text-amber-500" />
+              Guardar como Preset
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400 pt-2">
+              Guarda los ajustes actuales de luz y color para aplicarlos rápidamente a otras fotos.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">Nombre del Preset</label>
+              <input 
+                type="text"
+                value={newPresetName}
+                onChange={(e) => setNewPresetName(e.target.value)}
+                placeholder="Ej: Atardecer Cálido"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-amber-500"
+              />
+            </div>
+            
+            {userProfile?.role === 'admin' && (
+              <div className="space-y-4 pt-2 border-t border-zinc-900">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-bold text-zinc-300">Preset del Sistema</label>
+                    <p className="text-xs text-zinc-500">Disponible para todos los usuarios</p>
+                  </div>
+                  <input 
+                    type="checkbox"
+                    checked={newPresetIsSystem}
+                    onChange={(e) => setNewPresetIsSystem(e.target.checked)}
+                    className="w-5 h-5 accent-amber-500"
+                  />
+                </div>
+                
+                {newPresetIsSystem && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">Plan Requerido</label>
+                    <select 
+                      value={newPresetPlan}
+                      onChange={(e) => setNewPresetPlan(e.target.value as PlanType)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="free">Free</option>
+                      <option value="pro">Pro</option>
+                      <option value="studio">Studio</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex gap-3">
+            <Button 
+              variant="ghost" 
+              className="flex-1 border-zinc-800 hover:bg-zinc-900"
+              onClick={() => setIsSavingPreset(false)}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              className="flex-1 bg-amber-500 hover:bg-amber-400 text-black font-bold"
+              onClick={confirmSavePreset}
+            >
+              Guardar Preset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <Trash2 className="w-5 h-5 text-red-500" />
+              ¿Eliminar fotografía?
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400 pt-2">
+              Esta acción eliminará la foto permanentemente de Aura Lab y del almacenamiento en la nube. No se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-3 mt-6">
+            <Button 
+              variant="ghost" 
+              className="flex-1 border-zinc-800 hover:bg-zinc-900"
+              onClick={() => setIsDeleteDialogOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              variant="destructive" 
+              className="flex-1 bg-red-600 hover:bg-red-500"
+              onClick={() => {
+                if (photoToDeleteId) {
+                  deletePhoto(photoToDeleteId);
+                  setIsDeleteDialogOpen(false);
+                }
+              }}
+            >
+              Eliminar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Presets Dialog */}
+      <Dialog open={isBulkImportOpen} onOpenChange={setIsBulkImportOpen}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-amber-500" />
+              Importación Masiva de Presets
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400 pt-2">
+              Selecciona una carpeta que contenga archivos .lrtemplate. Los presets se organizarán por el nombre de la subcarpeta.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">Plan Requerido para este Lote</label>
+              <select 
+                value={bulkImportPlan}
+                onChange={(e) => setBulkImportPlan(e.target.value as PlanType)}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-amber-500"
+              >
+                <option value="free">Free (Gratis)</option>
+                <option value="pro">Pro (Suscripción)</option>
+                <option value="studio">Studio (Profesional)</option>
+              </select>
+            </div>
+
+            <div className="pt-4">
+              <input
+                type="file"
+                id="bulk-preset-input"
+                className="hidden"
+                {...({ webkitdirectory: "", directory: "" } as any)}
+                onChange={handleBulkImport}
+                disabled={isImporting}
+              />
+              <Button 
+                className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold h-12"
+                onClick={() => document.getElementById('bulk-preset-input')?.click()}
+                disabled={isImporting}
+              >
+                {isImporting ? (
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 animate-spin" />
+                    Procesando...
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <FolderPlus className="w-4 h-4" />
+                    Seleccionar Carpeta de Presets
+                  </div>
+                )}
+              </Button>
+            </div>
+            
+            <p className="text-[10px] text-zinc-500 text-center italic">
+              Nota: Los archivos deben ser formato .lrtemplate (Lightroom Classic).
+            </p>
           </div>
         </DialogContent>
       </Dialog>
