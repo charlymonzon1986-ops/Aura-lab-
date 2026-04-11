@@ -35,7 +35,7 @@ function ColorWheel({ label, value, onChange }: ColorWheelProps) {
     const saturation = Math.min(100, (distance / radius) * 100);
     
     if (distance <= radius || isDragging) {
-      onChange(`hsla(${angle.toFixed(0)}, ${saturation.toFixed(0)}%, 50%, 0.3)`);
+      onChange(`hsla(${angle.toFixed(0)}, ${saturation.toFixed(0)}%, 50%, 0.5)`);
     }
   };
 
@@ -63,7 +63,7 @@ function ColorWheel({ label, value, onChange }: ColorWheelProps) {
             style={{
               left: `${50 + (parseFloat(value.split(',')[1]) / 2) * Math.cos((parseFloat(value.split('(')[1]) - 0) * (Math.PI / 180))}%`,
               top: `${50 + (parseFloat(value.split(',')[1]) / 2) * Math.sin((parseFloat(value.split('(')[1]) - 0) * (Math.PI / 180))}%`,
-              backgroundColor: value.replace('0.3', '1')
+              backgroundColor: value.replace('0.5', '1')
             }}
           />
         )}

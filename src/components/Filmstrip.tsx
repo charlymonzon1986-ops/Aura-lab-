@@ -40,6 +40,11 @@ export function Filmstrip({ photos, selectedPhotoId, onSelect }: FilmstripProps)
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"
           />
+          {/* Color Balance Overlays for Filmstrip */}
+          <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: photo.settings.shadowTint }} />
+          <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: photo.settings.midtoneTint }} />
+          <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-40" style={{ backgroundColor: photo.settings.highlightTint }} />
+          
           {selectedPhotoId === photo.id && (
             <div className="absolute inset-0 bg-amber-500/10 flex items-center justify-center">
               <div className="w-1 h-1 bg-amber-500 rounded-full shadow-[0_0_8px_rgba(245,158,11,0.8)]" />

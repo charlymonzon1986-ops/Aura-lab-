@@ -54,12 +54,28 @@ export const LightingControls = React.memo(function LightingControls({
 
   const updateCSSVariables = (key: keyof LightingSettings, val: any) => {
     const root = document.documentElement;
-    if (key === 'brightness') root.style.setProperty('--img-brightness', `${val}%`);
-    if (key === 'contrast') root.style.setProperty('--img-contrast', `${val}%`);
-    if (key === 'saturation') root.style.setProperty('--img-saturate', `${val}%`);
-    if (key === 'warmth') root.style.setProperty('--img-sepia', `${val > 0 ? val : 0}%`);
-    if (key === 'tint') root.style.setProperty('--img-hue', `${val}deg`);
-    if (key === 'exposure') root.style.setProperty('--img-exposure', `${1 + val / 100}`);
+    const s = { ...localSettings, [key]: val };
+
+    // Advanced math for accurate rendering (matching getFilterString)
+    const whiteAdj = (s.whites - 100) / 2;
+    const blackAdj = (s.blacks - 100) / 2;
+    const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
+    
+    const highAdj = (s.highlights - 100) / 4;
+    const shadAdj = (s.shadows - 100) / 4;
+    const effectiveContrast = s.contrast + (s.clarity / 2) + highAdj - shadAdj;
+
+    root.style.setProperty('--img-brightness', `${effectiveBrightness}%`);
+    root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
+    root.style.setProperty('--img-saturate', `${s.saturation * (s.vibrance / 100)}%`);
+    
+    const sepiaVal = s.warmth > 0 ? s.warmth / 2 : 0;
+    const warmthHue = s.warmth < 0 ? s.warmth / 2 : 0;
+    const tintHue = s.tint / 2;
+    root.style.setProperty('--img-sepia', `${sepiaVal}%`);
+    root.style.setProperty('--img-hue', `${warmthHue + tintHue}deg`);
+    root.style.setProperty('--img-exposure', `1`);
+
     if (key === 'vignette') root.style.setProperty('--img-vignette', `${val / 100}`);
     if (key === 'rotation') root.style.setProperty('--img-rotate', `${val}deg`);
     if (key === 'flipX') root.style.setProperty('--img-flip-x', val ? '-1' : '1');

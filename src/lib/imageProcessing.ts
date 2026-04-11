@@ -22,7 +22,7 @@ export function getFilterString(settings: LightingSettings): string {
   // Blacks (100 is neutral, < 100 decreases brightness of dark areas)
   const whiteAdj = (whites - 100) / 2;
   const blackAdj = (blacks - 100) / 2;
-  const effectiveBrightness = brightness + exposure + whiteAdj + blackAdj;
+  const effectiveBrightness = brightness + (exposure * 20) + whiteAdj + blackAdj;
   
   // Highlights and Shadows simulation
   const highAdj = (highlights - 100) / 4;

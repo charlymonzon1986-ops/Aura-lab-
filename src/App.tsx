@@ -408,60 +408,37 @@ export default function App() {
     setIsUploading(true);
     setUploadProgress(0);
 
-    // Sanitize filename: remove special characters and spaces
-    const sanitizedName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
-    const storagePath = `users/${user.uid}/photos/${Date.now()}_${sanitizedName}`;
-    const storageRef = ref(storage, storagePath);
-    
-    console.log("Storage Reference created:", storageRef.fullPath);
-    console.log("Bucket:", storageRef.bucket);
-
     try {
-      console.log("Iniciando subida directa a Firebase Storage...");
+      console.log("Iniciando subida a Backblaze B2...");
       
-      const uploadTask = uploadBytesResumable(storageRef, file);
+      const formData = new FormData();
+      formData.append("file", file);
 
-      uploadTask.on('state_changed', 
-        (snapshot) => {
-          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+      const response = await axios.post("/api/upload", formData, {
+        onUploadProgress: (progressEvent) => {
+          const total = progressEvent.total || file.size;
+          const progress = Math.round((progressEvent.loaded / total) * 100);
           setUploadProgress(progress);
-        }, 
-        (error) => {
-          console.error("Error en subida a Firebase Storage:", error);
-          toast.error("Error al subir el archivo a Firebase Storage");
-          setIsUploading(false);
-        }, 
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          console.log("Subida exitosa. URL recibida:", downloadURL);
-          
-          // If it's RAW, we still need the server to generate a thumbnail
-          let finalThumbnailUrl = undefined;
-          if (isRaw) {
-            try {
-              const formData = new FormData();
-              formData.append("file", file);
-              const thumbRes = await axios.post("/api/process-raw-thumb", formData);
-              finalThumbnailUrl = thumbRes.data.thumbnailUrl;
-            } catch (thumbErr) {
-              console.warn("No se pudo generar miniatura para RAW:", thumbErr);
-            }
-          }
+          console.log(`B2 Upload progress: ${progress}% (${progressEvent.loaded}/${total})`);
+        },
+        timeout: 300000 // 5 minutes timeout for large files
+      });
 
-          await addPhoto(downloadURL, file.name, file.size, storagePath, finalThumbnailUrl);
-          setIsUploading(false);
-          setUploadProgress(0);
-          if (fileInputRef.current) fileInputRef.current.value = "";
-          toast.success("Foto subida correctamente");
-        }
-      );
-    } catch (error: any) {
-      console.error("Error en la subida:", error);
+      const { url, thumbnailUrl } = response.data;
+      console.log("Subida a B2 exitosa:", { url, thumbnailUrl });
+
+      await addPhoto(url, file.name, file.size, undefined, thumbnailUrl);
+      
       setIsUploading(false);
       setUploadProgress(0);
-      
-      const errorMsg = error.response?.data?.error || error.message;
-      toast.error(`Error al subir el archivo: ${errorMsg}`);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      toast.success("Foto subida correctamente");
+
+    } catch (error: any) {
+      console.error("Error en la subida a B2:", error);
+      toast.error("Error al subir la foto. Por favor, intenta de nuevo.");
+      setIsUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -512,7 +489,8 @@ export default function App() {
   }, [photos, selectedPhotoId, user]);
 
   const resetZoom = () => {
-    setZoom(1);
+    // Fit to screen logic
+    setZoom(0.8); // Default to 80% to see margins
     setPan({ x: 0, y: 0 });
   };
 
@@ -539,12 +517,28 @@ export default function App() {
     if (!selectedPhoto) return;
     const s = selectedPhoto.settings;
     const root = document.documentElement;
-    root.style.setProperty('--img-brightness', `${s.brightness}%`);
-    root.style.setProperty('--img-contrast', `${s.contrast}%`);
-    root.style.setProperty('--img-saturate', `${s.saturation}%`);
-    root.style.setProperty('--img-sepia', `${s.warmth > 0 ? s.warmth : 0}%`);
-    root.style.setProperty('--img-hue', `${s.tint}deg`);
-    root.style.setProperty('--img-exposure', `${1 + s.exposure / 100}`);
+    
+    // Advanced math for accurate rendering (matching getFilterString)
+    const whiteAdj = (s.whites - 100) / 2;
+    const blackAdj = (s.blacks - 100) / 2;
+    const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
+    
+    const highAdj = (s.highlights - 100) / 4;
+    const shadAdj = (s.shadows - 100) / 4;
+    const effectiveContrast = s.contrast + (s.clarity / 2) + highAdj - shadAdj;
+
+    root.style.setProperty('--img-brightness', `${effectiveBrightness}%`);
+    root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
+    root.style.setProperty('--img-saturate', `${s.saturation * (s.vibrance / 100)}%`);
+    
+    // Warmth logic: positive = sepia, negative = blue hue-rotate
+    const sepiaVal = s.warmth > 0 ? s.warmth / 2 : 0;
+    const warmthHue = s.warmth < 0 ? s.warmth / 2 : 0;
+    const tintHue = s.tint / 2;
+    
+    root.style.setProperty('--img-sepia', `${sepiaVal}%`);
+    root.style.setProperty('--img-hue', `${warmthHue + tintHue}deg`);
+    root.style.setProperty('--img-exposure', `1`); // Exposure is now baked into brightness
     root.style.setProperty('--img-vignette', `${s.vignette / 100}`);
     root.style.setProperty('--img-rotate', `${s.rotation}deg`);
     root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
@@ -740,7 +734,21 @@ export default function App() {
           {
             role: "user",
             parts: [
-              { text: "Analiza esta fotografía y devuelve los ajustes de iluminación ideales para mejorarla. Responde ÚNICAMENTE con un objeto JSON que contenga estos campos numéricos (0-200 para la mayoría, 100 es neutro; -100 a 100 para exposición, sombras, etc): brightness, contrast, saturation, exposure, warmth, tint, vibrance, sharpening, clarity, highlights, shadows, whites, blacks." },
+              { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional y natural. 
+              Evita ajustes extremos que saturen o cambien drásticamente el color original.
+              Responde ÚNICAMENTE con un objeto JSON con estos campos:
+              - brightness (80-120, 100 es neutro)
+              - contrast (90-130, 100 es neutro)
+              - saturation (90-120, 100 es neutro)
+              - exposure (-1 a 1, 0 es neutro)
+              - warmth (90-110, 100 es neutro)
+              - tint (95-105, 100 es neutro)
+              - vibrance (100-130, 100 es neutro)
+              - clarity (0-30, 0 es neutro)
+              - highlights (80-120, 100 es neutro)
+              - shadows (80-120, 100 es neutro)
+              - whites (90-110, 100 es neutro)
+              - blacks (90-110, 100 es neutro)` },
               {
                 inlineData: {
                   mimeType: blob.type || "image/jpeg",
@@ -757,10 +765,21 @@ export default function App() {
 
       const aiResponse = JSON.parse(result.text);
       
+      // Normalize AI response to match our internal ranges
+      const normalizedAiResponse = { ...aiResponse };
+      
+      if (normalizedAiResponse.warmth !== undefined) {
+        normalizedAiResponse.warmth = (normalizedAiResponse.warmth - 100);
+      }
+      if (normalizedAiResponse.tint !== undefined) {
+        normalizedAiResponse.tint = (normalizedAiResponse.tint - 100);
+      }
+      // Exposure is already in -1 to 1 range from AI, our app uses -5 to 5, so it's safe
+
       // Merge with default settings to ensure all fields exist
       const enhancedSettings: LightingSettings = {
         ...DEFAULT_SETTINGS,
-        ...aiResponse
+        ...normalizedAiResponse
       };
       
       updatePhotoSettings(id, enhancedSettings);
@@ -813,8 +832,36 @@ export default function App() {
         
         // Apply filters to canvas
         const s = selectedPhoto.settings;
-        ctx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%) saturate(${s.saturation}%) sepia(${s.warmth}%)`;
+        const exposureVal = 1 + s.exposure / 100;
+        const hueVal = s.tint;
+        const sepiaVal = s.sepia;
+        
+        ctx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%) saturate(${s.saturation}%) sepia(${s.warmth > 0 ? s.warmth : 0}%) hue-rotate(${hueVal}deg) brightness(${exposureVal}) sepia(${sepiaVal}%) blur(${s.blur}px)`;
         ctx.drawImage(img, 0, 0);
+
+        // Apply Color Balance Overlays
+        if (s.shadowTint !== "transparent") {
+          ctx.globalCompositeOperation = 'soft-light';
+          ctx.globalAlpha = 0.6;
+          ctx.fillStyle = s.shadowTint;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        if (s.midtoneTint !== "transparent") {
+          ctx.globalCompositeOperation = 'overlay';
+          ctx.globalAlpha = 0.5;
+          ctx.fillStyle = s.midtoneTint;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        if (s.highlightTint !== "transparent") {
+          ctx.globalCompositeOperation = 'color';
+          ctx.globalAlpha = 0.4;
+          ctx.fillStyle = s.highlightTint;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        
+        // Reset composite
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1.0;
         
         const link = document.createElement('a');
         link.download = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.png`;
@@ -1169,7 +1216,7 @@ export default function App() {
                                   <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }}>
                                     <RotateCcw className="w-3 h-3" />
                                   </motion.div>
-                                  Subiendo a la nube...
+                                  {uploadProgress < 100 ? "Subiendo archivo..." : "Procesando imagen..."}
                                 </span>
                                 <span>{Math.round(uploadProgress)}%</span>
                               </div>
@@ -1271,6 +1318,10 @@ export default function App() {
                                     <span className="text-[8px] opacity-50 mt-1">Generando miniatura...</span>
                                   </div>
                                 )}
+                                {/* Color Balance Overlays for Gallery */}
+                                <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: photo.settings.shadowTint }} />
+                                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: photo.settings.midtoneTint }} />
+                                <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-40" style={{ backgroundColor: photo.settings.highlightTint }} />
                               </div>
                               <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4">
                                 <h5 className="text-white font-bold text-sm mb-1">{photo.title}</h5>
@@ -1508,9 +1559,9 @@ export default function App() {
                           draggable={false}
                         />
                         {/* Color Balance Overlays */}
-                        <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-30" style={{ backgroundColor: selectedPhoto.settings.shadowTint }} />
-                        <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-20" style={{ backgroundColor: selectedPhoto.settings.midtoneTint }} />
-                        <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-10" style={{ backgroundColor: selectedPhoto.settings.highlightTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: selectedPhoto.settings.shadowTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: selectedPhoto.settings.midtoneTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-40" style={{ backgroundColor: selectedPhoto.settings.highlightTint }} />
                         
                         {/* Vignette Overlay */}
                         <div 

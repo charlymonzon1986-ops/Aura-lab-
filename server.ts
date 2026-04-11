@@ -9,25 +9,139 @@ import sharp from "sharp";
 import axios from "axios";
 import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
+import B2 from 'backblaze-b2';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Read Firebase Config safely
-let firebaseConfig: any = {};
-try {
-  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-  if (fs.existsSync(configPath)) {
-    firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+// Initialize B2 Client
+const b2 = new B2({
+  applicationKeyId: process.env.B2_KEY_ID || '',
+  applicationKey: process.env.B2_APPLICATION_KEY || ''
+});
+
+let b2Authorized = false;
+async function authorizeB2() {
+  if (b2Authorized) return;
+  try {
+    await b2.authorize();
+    b2Authorized = true;
+    console.log("✅ Backblaze B2 Authorized");
+  } catch (err) {
+    console.error("❌ Failed to authorize Backblaze B2:", err);
   }
-} catch (err) {
-  console.warn("Could not read firebase-applet-config.json:", err);
 }
 
-// Ensure uploads directory exists in /tmp for write access in serverless environments
-const UPLOADS_DIR = path.join("/tmp", "aura-uploads");
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Helper to upload to B2
+async function uploadToB2(buffer: Buffer, fileName: string, contentType: string) {
+  try {
+    await authorizeB2();
+    const bucketName = process.env.B2_BUCKET_NAME;
+    if (!bucketName) throw new Error("B2_BUCKET_NAME not configured");
+
+    const bucketResponse = await b2.getBucket({ bucketName });
+    const bucketId = bucketResponse.data.buckets[0].bucketId;
+
+    const uploadUrlResponse = await b2.getUploadUrl({ bucketId });
+    const { uploadUrl, authorizationToken } = uploadUrlResponse.data;
+
+    const uploadResponse = await b2.uploadFile({
+      uploadUrl,
+      uploadAuthToken: authorizationToken,
+      fileName,
+      data: buffer,
+      contentType
+    });
+
+    const endpoint = process.env.B2_ENDPOINT || 'f000.backblazeb2.com';
+    return `https://${endpoint}/file/${bucketName}/${fileName}`;
+  } catch (err) {
+    console.error("Error uploading to B2:", err);
+    throw err;
+  }
+}
+
+// Helper to delete from B2
+async function deleteFromB2(fileUrl: string) {
+  try {
+    await authorizeB2();
+    const bucketName = process.env.B2_BUCKET_NAME;
+    if (!bucketName) return;
+
+    // Extract fileName from URL: https://endpoint/file/bucketName/fileName
+    const urlParts = fileUrl.split(`/file/${bucketName}/`);
+    if (urlParts.length < 2) return;
+    const fileName = decodeURIComponent(urlParts[1]);
+
+    // B2 delete requires fileId, so we need to find it first
+    const fileInfo = await b2.listFileNames({
+      bucketId: (await b2.getBucket({ bucketName })).data.buckets[0].bucketId,
+      startFileName: fileName,
+      maxFileCount: 1,
+      prefix: fileName
+    });
+
+    const file = fileInfo.data.files.find((f: any) => f.fileName === fileName);
+    if (file) {
+      await b2.deleteFileVersion({
+        fileId: file.fileId,
+        fileName: file.fileName
+      });
+      console.log(`🗑️ B2 file deleted: ${fileName}`);
+    }
+  } catch (err) {
+    console.error("Error deleting from B2:", err);
+  }
+}
+
+// Multer configuration for memory storage
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB limit
+  },
+});
+
+// Helper to generate thumbnails
+async function generateThumbnail(buffer: Buffer, fileName: string) {
+  const ext = path.extname(fileName).toLowerCase();
+  const isRaw = ['.arw', '.cr2', '.nef', '.dng', '.orf', '.raf'].includes(ext);
+  
+  try {
+    if (isRaw) {
+      // For RAW, we need a temp file for exiftool
+      const tempPath = path.join('/tmp', `raw-${Date.now()}${ext}`);
+      const thumbTempPath = path.join('/tmp', `thumb-${Date.now()}.jpg`);
+      fs.writeFileSync(tempPath, buffer);
+      
+      try {
+        await exiftool.extractPreview(tempPath, thumbTempPath);
+        const thumbBuffer = fs.readFileSync(thumbTempPath);
+        const processedThumb = await sharp(thumbBuffer)
+          .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 80 })
+          .toBuffer();
+        
+        // Cleanup temp files
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        if (fs.existsSync(thumbTempPath)) fs.unlinkSync(thumbTempPath);
+        
+        return processedThumb;
+      } catch (err) {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        if (fs.existsSync(thumbTempPath)) fs.unlinkSync(thumbTempPath);
+        throw err;
+      }
+    } else {
+      return await sharp(buffer)
+        .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+    }
+  } catch (err) {
+    console.error("Error generating thumbnail:", err);
+    return null;
+  }
 }
 
 async function startServer() {
@@ -37,74 +151,17 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(cors());
 
-  // Serve static files from public/uploads BEFORE Vite middleware
-  app.use("/uploads", (req, res, next) => {
-    console.log(`📸 Requesting image: ${req.url}`);
-    next();
-  }, express.static(UPLOADS_DIR));
-
   // Diagnostic route
   app.get("/api/debug-storage", async (req, res) => {
     res.json({ 
-      localUploadsDir: UPLOADS_DIR,
-      storageStatus: "Using Local Storage (Firebase Storage is blocked on Spark plan)",
-      projectId: firebaseConfig.projectId,
-      uploadsCount: fs.readdirSync(UPLOADS_DIR).length
+      storageStatus: "Using Backblaze B2",
+      bucketName: process.env.B2_BUCKET_NAME
     });
   });
 
-  // Multer configuration for memory storage
-  const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: {
-      fileSize: 500 * 1024 * 1024, // 500MB limit
-    },
+  app.post("/api/ping-post", (req, res) => {
+    res.json({ status: "ok", receivedBody: req.body });
   });
-
-  // Helper to generate thumbnails
-  async function generateThumbnail(filePath: string, fileName: string) {
-    const ext = path.extname(fileName).toLowerCase();
-    const thumbName = `thumb-${path.parse(fileName).name}.jpg`;
-    const thumbPath = path.join(UPLOADS_DIR, thumbName);
-
-    try {
-      const isRaw = ['.arw', '.cr2', '.nef', '.dng', '.orf', '.raf'].includes(ext);
-      
-      if (isRaw) {
-        console.log(`📸 Extracting RAW preview for: ${fileName}`);
-        try {
-          // Extract preview image (usually a full-size JPEG embedded in the RAW file)
-          await exiftool.extractPreview(filePath, thumbPath);
-          console.log(`✅ RAW preview extracted: ${thumbName}`);
-          
-          // Optionally resize the extracted preview to be a reasonable thumbnail size
-          // but extractPreview usually gives a good enough image.
-          // Let's ensure it's not TOO big for a thumbnail.
-          const buffer = fs.readFileSync(thumbPath);
-          await sharp(buffer)
-            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toFile(thumbPath + '.tmp');
-          
-          fs.renameSync(thumbPath + '.tmp', thumbPath);
-        } catch (rawErr) {
-          console.error(`❌ Error extracting RAW preview for ${fileName}:`, rawErr);
-          return null;
-        }
-      } else {
-        // Regular image thumbnail
-        await sharp(filePath)
-          .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 80 })
-          .toFile(thumbPath);
-      }
-      
-      return `/uploads/${thumbName}`;
-    } catch (err) {
-      console.error("Error generating thumbnail:", err);
-      return null;
-    }
-  }
 
   // Mercado Pago Configuration
   const client = new MercadoPagoConfig({ 
@@ -232,95 +289,73 @@ async function startServer() {
     }
   });
 
-  // Delete endpoint for local files
+  // Delete endpoint for B2 files
   app.post("/api/delete-file", async (req, res) => {
     try {
       const { url, thumbnailUrl } = req.body;
       if (!url) return res.status(400).json({ error: "No URL provided" });
 
-      // Extract filenames
-      const fileName = path.basename(url);
-      const filePath = path.join(UPLOADS_DIR, fileName);
-
-      // Delete main file
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log(`🗑️ Archivo eliminado: ${filePath}`);
-      }
-
-      // Delete thumbnail if exists
-      if (thumbnailUrl) {
-        const thumbName = path.basename(thumbnailUrl);
-        const thumbPath = path.join(UPLOADS_DIR, thumbName);
-        if (fs.existsSync(thumbPath)) {
-          fs.unlinkSync(thumbPath);
-          console.log(`🗑️ Miniatura eliminada: ${thumbPath}`);
-        }
+      await deleteFromB2(url);
+      if (thumbnailUrl && thumbnailUrl !== url) {
+        await deleteFromB2(thumbnailUrl);
       }
 
       res.json({ success: true });
     } catch (error: any) {
-      console.error("Error al eliminar archivo local:", error);
+      console.error("Error al eliminar archivo en B2:", error);
       res.status(500).json({ error: "Error al eliminar el archivo", details: error.message });
     }
   });
 
-  // Upload endpoint using Local Storage as Primary
+  // Upload endpoint using Backblaze B2
   app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "No file uploaded" });
 
-      console.log(`Local upload started: ${file.originalname} (${file.size} bytes)`);
+      console.log(`B2 upload started: ${file.originalname} (${file.size} bytes)`);
 
-      // Generate a safe filename
       const timestamp = Date.now();
       const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
       const fileName = `${timestamp}-${safeName}`;
-      const filePath = path.join(UPLOADS_DIR, fileName);
 
-      // Save file locally
-      fs.writeFileSync(filePath, file.buffer);
+      // 1. Upload main file to B2
+      const finalUrl = await uploadToB2(file.buffer, fileName, file.mimetype);
+      console.log(`✅ Archivo subido a B2: ${finalUrl}`);
+
+      // 2. Generate and upload thumbnail
+      let thumbnailUrl = finalUrl;
+      const thumbBuffer = await generateThumbnail(file.buffer, file.originalname);
       
-      // Generate thumbnail
-      const thumbnailUrl = await generateThumbnail(filePath, fileName);
-      
-      const finalUrl = `/uploads/${fileName}`;
-      console.log(`✅ Archivo guardado localmente: ${finalUrl}`);
-      if (thumbnailUrl) console.log(`✅ Miniatura generada: ${thumbnailUrl}`);
+      if (thumbBuffer) {
+        const thumbName = `thumb-${timestamp}-${path.parse(safeName).name}.jpg`;
+        thumbnailUrl = await uploadToB2(thumbBuffer, thumbName, 'image/jpeg');
+        console.log(`✅ Miniatura subida a B2: ${thumbnailUrl}`);
+      }
       
       return res.json({ 
         url: finalUrl, 
-        thumbnailUrl: thumbnailUrl || finalUrl,
-        isLocal: true 
+        thumbnailUrl: thumbnailUrl,
+        isLocal: false 
       });
     } catch (error: any) {
-      console.error("Error en subida local:", error);
-      return res.status(500).json({ error: "Error al guardar el archivo localmente", details: error.message });
+      console.error("Error en subida a B2:", error);
+      return res.status(500).json({ error: "Error al guardar el archivo en B2", details: error.message });
     }
   });
 
-  // Route to process RAW thumbnail for client-side uploads
+  // Route to process RAW thumbnail (legacy support if needed, but /api/upload handles it now)
   app.post("/api/process-raw-thumb", upload.single("file"), async (req, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ error: "No file uploaded" });
 
-      const timestamp = Date.now();
-      const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
-      const fileName = `${timestamp}-${safeName}`;
-      const filePath = path.join(UPLOADS_DIR, fileName);
+      const thumbBuffer = await generateThumbnail(file.buffer, file.originalname);
+      if (!thumbBuffer) throw new Error("Could not generate thumbnail");
 
-      // Save temporary file to process
-      fs.writeFileSync(filePath, file.buffer);
-      
-      // Generate thumbnail
-      const thumbnailUrl = await generateThumbnail(filePath, fileName);
-      
-      // We can delete the original file after generating the thumbnail since it's already in Firebase Storage
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
+      const timestamp = Date.now();
+      const thumbName = `thumb-${timestamp}-${path.parse(file.originalname).name}.jpg`;
+      const thumbnailUrl = await uploadToB2(thumbBuffer, thumbName, 'image/jpeg');
 
       return res.json({ 
         thumbnailUrl: thumbnailUrl
