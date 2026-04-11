@@ -1,4 +1,5 @@
 import * as React from "react";
+import { motion } from "motion/react";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { 
@@ -31,9 +32,17 @@ interface LightingControlsProps {
   settings: LightingSettings;
   onChange: (settings: LightingSettings) => void;
   userPlan: PlanType;
+  onSmartEnhance: () => void;
+  isAutoEnhancing: boolean;
 }
 
-export const LightingControls = React.memo(function LightingControls({ settings, onChange, userPlan }: LightingControlsProps) {
+export const LightingControls = React.memo(function LightingControls({ 
+  settings, 
+  onChange, 
+  userPlan,
+  onSmartEnhance,
+  isAutoEnhancing
+}: LightingControlsProps) {
   const [localSettings, setLocalSettings] = React.useState(settings);
 
   // Sync local settings when props change (e.g. preset applied)
@@ -127,6 +136,33 @@ export const LightingControls = React.memo(function LightingControls({ settings,
 
   return (
     <div className="space-y-10 pb-20">
+      {/* AI Smart Enhance */}
+      <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 to-transparent border border-amber-500/20 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-amber-500" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-white">Smart Enhance</span>
+          </div>
+          <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[8px]">FREE API</Badge>
+        </div>
+        <p className="text-[10px] text-zinc-500 leading-relaxed">
+          Optimiza automáticamente la iluminación y el color usando Gemini 3 Flash.
+        </p>
+        <Button 
+          className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold text-[10px] uppercase tracking-wider h-9 rounded-xl shadow-lg shadow-amber-500/20"
+          onClick={onSmartEnhance}
+          disabled={isAutoEnhancing}
+        >
+          {isAutoEnhancing ? (
+            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
+              <RotateCw className="w-3.5 h-3.5" />
+            </motion.div>
+          ) : (
+            "Aplicar Mejora IA"
+          )}
+        </Button>
+      </div>
+
       {/* Geometría y Recorte */}
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">

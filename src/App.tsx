@@ -1,6 +1,7 @@
 import * as React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
+import { GoogleGenAI } from "@google/genai";
 import { 
   X,
   LayoutGrid, 
@@ -12,6 +13,9 @@ import {
   Layout,
   LayoutDashboard,
   PieChart,
+  Folder as FolderIcon,
+  FolderPlus,
+  FileJson,
   Plus,
   HardDrive as HardDriveIcon,
   Image as ImageIcon, 
@@ -79,7 +83,7 @@ import {
 import { onAuthStateChanged, User } from "firebase/auth";
 import { Progress } from "@/components/ui/progress";
 import { SYSTEM_PRESETS } from "@/src/constants/presets";
-import { UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES } from "@/src/types";
+import { UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } from "@/src/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OperationType, handleFirestoreError } from "@/src/firebase";
 
@@ -102,15 +106,22 @@ const fixImageUrl = (url: string) => {
   return url;
 };
 
+// Initialize Gemini AI (Free Tier)
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+
 export default function App() {
   const [user, setUser] = React.useState<User | null>(null);
   const [userProfile, setUserProfile] = React.useState<UserProfile | null>(null);
   const [photos, setPhotos] = React.useState<Photo[]>([]);
+  const [folders, setFolders] = React.useState<Folder[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = React.useState<string | null>(null);
   const [userPresets, setUserPresets] = React.useState<Preset[]>([]);
   const [isAuthReady, setIsAuthReady] = React.useState(false);
   const [customLogo, setCustomLogo] = React.useState<string | null>(null);
   const [showPricing, setShowPricing] = React.useState(false);
   const [showStorageModal, setShowStorageModal] = React.useState(false);
+  const [showCreateFolder, setShowCreateFolder] = React.useState(false);
+  const [newFolderName, setNewFolderName] = React.useState("");
   const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
   
@@ -163,6 +174,13 @@ export default function App() {
       setUser(currentUser);
       if (currentUser) {
         try {
+          // Fetch Folders
+          const foldersQuery = query(collection(db, "folders"), where("userId", "==", currentUser.uid));
+          onSnapshot(foldersQuery, (snapshot) => {
+            const foldersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Folder));
+            setFolders(foldersList);
+          }, (error) => handleFirestoreError(error, OperationType.LIST, "folders"));
+
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
           const userDoc = await getDoc(userDocRef);
@@ -419,6 +437,11 @@ export default function App() {
     }
   };
 
+  const filteredPhotos = React.useMemo(() => {
+    if (!selectedFolderId) return photos;
+    return photos.filter(p => p.folderId === selectedFolderId);
+  }, [photos, selectedFolderId]);
+
   const selectedPhoto = React.useMemo(() => 
     photos.find(p => p.id === selectedPhotoId),
     [photos, selectedPhotoId]
@@ -633,32 +656,85 @@ export default function App() {
     updatePhotoSettings(id, { ...DEFAULT_SETTINGS });
   };
 
+  const handleLightroomImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    toast.info("Importación de catálogo de Lightroom (Beta): Esta función estará disponible próximamente.");
+  };
+
   const smartEnhance = async (id: string, openEditor = false) => {
+    const photo = photos.find(p => p.id === id);
+    if (!photo) return;
+
     setIsAutoEnhancing(true);
     if (openEditor) setSelectedPhotoId(id);
     
-    // Simulate AI analysis delay only if not already in editor
-    if (openEditor) {
-      await new Promise(resolve => setTimeout(resolve, 800));
+    try {
+      toast.loading("Analizando imagen con IA...", { id: "ai-enhance" });
+      
+      // Get the image data
+      const imageUrl = fixImageUrl(photo.url);
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      
+      // Convert to base64
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+      const base64Data = await base64Promise;
+      const base64Content = base64Data.split(',')[1];
+
+      // Call Gemini 3 Flash (Free Tier)
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: "Analiza esta fotografía y devuelve los ajustes de iluminación ideales para mejorarla. Responde ÚNICAMENTE con un objeto JSON que contenga estos campos numéricos (0-200 para la mayoría, 100 es neutro; -100 a 100 para exposición, sombras, etc): brightness, contrast, saturation, exposure, warmth, tint, vibrance, sharpening, clarity, highlights, shadows, whites, blacks." },
+              {
+                inlineData: {
+                  mimeType: blob.type || "image/jpeg",
+                  data: base64Content
+                }
+              }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const aiResponse = JSON.parse(result.text);
+      
+      // Merge with default settings to ensure all fields exist
+      const enhancedSettings: LightingSettings = {
+        ...DEFAULT_SETTINGS,
+        ...aiResponse
+      };
+      
+      updatePhotoSettings(id, enhancedSettings);
+      toast.success("Iluminación optimizada por IA", { id: "ai-enhance" });
+    } catch (error) {
+      console.error("AI Enhance error:", error);
+      toast.error("Error al usar la IA. Usando mejora automática básica.", { id: "ai-enhance" });
+      
+      // Fallback to basic enhancement
+      const fallbackSettings: LightingSettings = {
+        ...DEFAULT_SETTINGS,
+        brightness: 115,
+        contrast: 110,
+        saturation: 105,
+        exposure: 10,
+        clarity: 15
+      };
+      updatePhotoSettings(id, fallbackSettings);
+    } finally {
+      setIsAutoEnhancing(false);
     }
-    
-    // Natural enhancement preset
-    const enhancedSettings: LightingSettings = {
-      ...DEFAULT_SETTINGS,
-      brightness: 115,
-      contrast: 110,
-      saturation: 105,
-      exposure: 10,
-      warmth: 5,
-      highlights: 110,
-      shadows: 105,
-      clarity: 15,
-      vibrance: 110
-    };
-    
-    updatePhotoSettings(id, enhancedSettings);
-    setIsAutoEnhancing(false);
-    if (openEditor) toast.success("Iluminación optimizada automáticamente");
   };
 
   const navigatePhoto = (direction: 'prev' | 'next') => {
@@ -1052,26 +1128,70 @@ export default function App() {
                 ) : activeTab === 'gallery' ? (
                   /* Gallery View */
                   <div className="space-y-8">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                       <div className="space-y-1">
                         <h3 className="text-2xl font-bold text-white">Tu Galería</h3>
                         <p className="text-zinc-500 text-sm">Gestiona y edita tus capturas.</p>
                       </div>
-                      <Button 
-                        variant="outline" 
-                        className="border-zinc-800 text-zinc-400 hover:bg-zinc-900"
-                        onClick={() => setActiveTab('dashboard')}
+                      <div className="flex items-center gap-2">
+                        <label className="cursor-pointer">
+                          <Button variant="outline" className="border-zinc-800 text-zinc-400 hover:bg-zinc-900" asChild>
+                            <span>
+                              <FileJson className="w-4 h-4 mr-2" />
+                              Importar Lightroom
+                            </span>
+                          </Button>
+                          <input type="file" className="hidden" accept=".lrcat" onChange={handleLightroomImport} />
+                        </label>
+                        <Button 
+                          variant="outline" 
+                          className="border-zinc-800 text-zinc-400 hover:bg-zinc-900"
+                          onClick={() => setActiveTab('dashboard')}
+                        >
+                          <LayoutDashboard className="w-4 h-4 mr-2" />
+                          Dashboard
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Folders Bar */}
+                    <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                      <Button
+                        variant={selectedFolderId === null ? "default" : "outline"}
+                        size="sm"
+                        className={`rounded-full px-6 ${selectedFolderId === null ? 'bg-amber-600 hover:bg-amber-500' : 'border-zinc-800 text-zinc-400'}`}
+                        onClick={() => setSelectedFolderId(null)}
                       >
-                        <LayoutDashboard className="w-4 h-4 mr-2" />
-                        Dashboard
+                        Todas
+                      </Button>
+                      {folders.map(folder => (
+                        <Button
+                          key={folder.id}
+                          variant={selectedFolderId === folder.id ? "default" : "outline"}
+                          size="sm"
+                          className={`rounded-full px-6 ${selectedFolderId === folder.id ? 'bg-amber-600 hover:bg-amber-500' : 'border-zinc-800 text-zinc-400'}`}
+                          onClick={() => setSelectedFolderId(folder.id)}
+                        >
+                          <FolderIcon className="w-3.5 h-3.5 mr-2" />
+                          {folder.name}
+                        </Button>
+                      ))}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="rounded-full px-4 text-zinc-500 hover:text-amber-500 hover:bg-amber-500/10"
+                        onClick={() => setShowCreateFolder(true)}
+                      >
+                        <FolderPlus className="w-4 h-4 mr-2" />
+                        Nueva Carpeta
                       </Button>
                     </div>
 
                     {/* Gallery Grid */}
                     <div className="space-y-6">
-                      {photos.length > 0 ? (
+                      {filteredPhotos.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                          {photos.map((photo) => (
+                          {filteredPhotos.map((photo) => (
                             <motion.div
                               key={photo.id}
                               layoutId={photo.id}
@@ -1345,6 +1465,8 @@ export default function App() {
                       settings={selectedPhoto.settings} 
                       onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
                       userPlan={userProfile?.plan || 'free'}
+                      onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
+                      isAutoEnhancing={isAutoEnhancing}
                     />
                   </div>
                 )}

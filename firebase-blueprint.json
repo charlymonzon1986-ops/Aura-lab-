@@ -27,9 +27,22 @@
         "description": { "type": "string" },
         "settings": { "type": "object" },
         "isPublic": { "type": "boolean" },
+        "folderId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "url", "settings"]
+    },
+    "Folder": {
+      "title": "Folder",
+      "description": "User created folders for photo organization",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name"]
     },
     "Preset": {
       "title": "Preset",
@@ -57,6 +70,10 @@
     "/presets/{presetId}": {
       "schema": "Preset",
       "description": "User saved presets"
+    },
+    "/folders/{folderId}": {
+      "schema": "Folder",
+      "description": "User created folders"
     }
   }
 }

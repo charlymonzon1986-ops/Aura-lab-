@@ -10,6 +10,14 @@ export interface Photo {
   isPublic?: boolean;
   size?: number;
   storagePath?: string | null;
+  folderId?: string | null;
+}
+
+export interface Folder {
+  id: string;
+  name: string;
+  userId: string;
+  createdAt: string;
 }
 
 export interface Preset {
