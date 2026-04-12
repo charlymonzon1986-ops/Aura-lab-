@@ -74,6 +74,7 @@ export interface LightingSettings {
   
   // Detail
   sharpening: number;
+  focus: number;
   noiseReduction: number;
   
   // Optics
@@ -116,6 +117,7 @@ export const DEFAULT_SETTINGS: LightingSettings = {
   texture: 0,
   dehaze: 0,
   sharpening: 0,
+  focus: 0,
   noiseReduction: 0,
   vignette: 0,
   distortion: 0,

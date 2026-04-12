@@ -10,24 +10,38 @@ export function getFilterString(settings: LightingSettings): string {
     tint,
     vibrance,
     sharpening,
+    focus,
     clarity,
     highlights,
     shadows,
     whites,
-    blacks
+    blacks,
+    texture,
+    dehaze,
+    noiseReduction,
+    sepia: sepiaVal,
+    blur: blurVal
   } = settings;
   
   // Combine exposure and whites/blacks into brightness/contrast
-  // Whites (100 is neutral, > 100 increases brightness of bright areas)
-  // Blacks (100 is neutral, < 100 decreases brightness of dark areas)
   const whiteAdj = (whites - 100) / 2;
   const blackAdj = (blacks - 100) / 2;
   const effectiveBrightness = brightness + (exposure * 20) + whiteAdj + blackAdj;
   
+  // Dehaze simulation: Increase contrast and decrease brightness slightly
+  const dehazeContrast = dehaze * 0.5;
+  const dehazeBrightness = dehaze * -0.2;
+  
   // Highlights and Shadows simulation
   const highAdj = (highlights - 100) / 4;
   const shadAdj = (shadows - 100) / 4;
-  const effectiveContrast = contrast + (clarity / 2) + highAdj - shadAdj;
+  
+  // Texture and Clarity contribute to contrast
+  const textureAdj = texture / 4;
+  const clarityAdj = clarity / 2;
+  
+  const effectiveContrast = contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
+  const finalBrightness = effectiveBrightness + dehazeBrightness;
   
   // Warmth is simulated with sepia and hue-rotate
   const sepia = warmth > 0 ? warmth / 200 : 0;
@@ -37,15 +51,20 @@ export function getFilterString(settings: LightingSettings): string {
   const tintHue = tint / 2;
   
   // Vibrance is a "smarter" saturation
-  const effectiveSaturation = saturation * (vibrance / 100);
+  const dehazeSaturate = dehaze * 0.2;
+  const effectiveSaturation = (saturation * (vibrance / 100)) + dehazeSaturate;
+  
+  // Noise Reduction is a subtle blur
+  const nrBlur = noiseReduction / 50;
   
   return `
-    brightness(${effectiveBrightness}%) 
+    brightness(${finalBrightness}%) 
     contrast(${effectiveContrast}%) 
     saturate(${effectiveSaturation}%) 
-    sepia(${sepia}) 
+    sepia(${sepia + (sepiaVal / 100)}) 
     hue-rotate(${warmthHue + tintHue}deg)
-    ${sharpening > 0 ? `blur(${sharpening / 100}px)` : ''}
+    blur(${blurVal + nrBlur}px)
+    ${(sharpening > 0 || focus > 0) ? 'url(#sharpen-filter)' : ''}
   `.replace(/\s+/g, ' ').trim();
 }
 

@@ -629,13 +629,27 @@ export default function App() {
     const blackAdj = (s.blacks - 100) / 2;
     const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
     
+    // Dehaze simulation
+    const dehazeContrast = s.dehaze * 0.5;
+    const dehazeBrightness = s.dehaze * -0.2;
+    
     const highAdj = (s.highlights - 100) / 4;
     const shadAdj = (s.shadows - 100) / 4;
-    const effectiveContrast = s.contrast + (s.clarity / 2) + highAdj - shadAdj;
+    
+    // Texture and Clarity
+    const textureAdj = s.texture / 4;
+    const clarityAdj = s.clarity / 2;
+    
+    const effectiveContrast = s.contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
+    const finalBrightness = effectiveBrightness + dehazeBrightness;
 
-    root.style.setProperty('--img-brightness', `${effectiveBrightness}%`);
+    root.style.setProperty('--img-brightness', `${finalBrightness}%`);
     root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
-    root.style.setProperty('--img-saturate', `${s.saturation * (s.vibrance / 100)}%`);
+    
+    // Vibrance and Dehaze saturate
+    const dehazeSaturate = s.dehaze * 0.2;
+    const effectiveSaturation = (s.saturation * (s.vibrance / 100)) + dehazeSaturate;
+    root.style.setProperty('--img-saturate', `${effectiveSaturation}%`);
     
     // Warmth logic: positive = sepia, negative = blue hue-rotate
     const sepiaVal = s.warmth > 0 ? s.warmth / 2 : 0;
@@ -650,7 +664,13 @@ export default function App() {
     root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
     root.style.setProperty('--img-flip-y', s.flipY ? '-1' : '1');
     root.style.setProperty('--img-sepia-val', `${s.sepia}%`);
-    root.style.setProperty('--img-blur', `${s.blur}px`);
+    
+    // Noise Reduction + Blur
+    const nrBlur = s.noiseReduction / 50;
+    root.style.setProperty('--img-blur', `${s.blur + nrBlur}px`);
+    
+    // Sharpening (handled via SVG filter)
+    root.style.setProperty('--img-sharpen', `${(s.sharpening + s.focus) / 100}`);
     root.style.setProperty('--img-crop-top', `${s.cropTop}%`);
     root.style.setProperty('--img-crop-right', `${s.cropRight}%`);
     root.style.setProperty('--img-crop-bottom', `${s.cropBottom}%`);
@@ -1205,6 +1225,18 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30 flex overflow-hidden relative">
       {/* Sidebar Backdrop (Mobile) */}
+      {/* SVG Filters for Advanced Processing */}
+      <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}>
+        <filter id="sharpen-filter">
+          <feConvolveMatrix 
+            order="3" 
+            preserveAlpha="true" 
+            kernelMatrix="0 -1 0 -1 5 -1 0 -1 0" 
+            divisor="1"
+          />
+        </filter>
+      </svg>
+
       <AnimatePresence>
         {isSidebarOpen && (
           <motion.div 
@@ -1959,7 +1991,7 @@ export default function App() {
                           alt={selectedPhoto.title}
                           className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
                           style={{ 
-                            filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur))`,
+                            filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur)) ${selectedPhoto.settings.sharpening > 0 || selectedPhoto.settings.focus > 0 ? 'url(#sharpen-filter)' : ''}`,
                             transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
                             clipPath: isComparing 
                               ? `inset(0 ${100 - compareValue}% 0 0)` 
@@ -2030,12 +2062,25 @@ export default function App() {
 
               {/* Right Sidebar: Controls */}
               <div className="w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-                  {selectedPhoto && (
-                    <div className="space-y-10">
-                      {/* Histogram Section */}
-                      {/* AI Information Section */}
-                      <div className="space-y-6">
+                {selectedPhoto && (
+                  <>
+                    {/* Fixed Histogram Section */}
+                    <div className="p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10">
+                      <div className="space-y-4">
+                        <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
+                          Histograma en Tiempo Real
+                        </h4>
+                        <Histogram 
+                          settings={selectedPhoto.settings} 
+                          imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                        />
+                      </div>
+                    </div>
+
+                    {/* Scrollable Content Section */}
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
+                      <div className="space-y-10">
+                        {/* AI Information Section */}
                         {selectedPhoto.description && (
                           <div className="space-y-4">
                             <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
@@ -2057,29 +2102,18 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Histogram Section */}
-                        <div className="space-y-4">
-                          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
-                            Histograma en Tiempo Real
-                          </h4>
-                          <Histogram 
-                            settings={selectedPhoto.settings} 
-                            imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                          />
-                        </div>
+                        {/* Main Controls */}
+                        <LightingControls 
+                          settings={selectedPhoto.settings} 
+                          onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
+                          userPlan={userProfile?.plan || 'free'}
+                          onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
+                          isAutoEnhancing={isAutoEnhancing}
+                        />
                       </div>
-
-                      {/* Main Controls */}
-                      <LightingControls 
-                        settings={selectedPhoto.settings} 
-                        onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
-                        userPlan={userProfile?.plan || 'free'}
-                        onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
-                        isAutoEnhancing={isAutoEnhancing}
-                      />
                     </div>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
             </div>
           </div>

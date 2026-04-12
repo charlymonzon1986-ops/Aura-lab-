@@ -291,6 +291,7 @@ export const LightingControls = React.memo(function LightingControls({
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Detalle y Óptica</h4>
         <div className="space-y-5">
           <ControlItem label="Nitidez" icon={Focus} value={s.sharpening} min={0} max={100} settingKey="sharpening" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Enfoque" icon={Zap} value={s.focus} min={0} max={100} settingKey="focus" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
           <ControlItem label="Red. Ruido" icon={Waves} value={s.noiseReduction} min={0} max={100} settingKey="noiseReduction" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
           <ControlItem label="Viñeteo" icon={CircleDot} value={s.vignette} min={0} max={100} settingKey="vignette" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
           <ControlItem label="Distorsión" icon={Box} value={s.distortion} min={-50} max={50} settingKey="distortion" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
