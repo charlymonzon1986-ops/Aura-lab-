@@ -1,4 +1,4 @@
-import * as React from "react";
+import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
@@ -33,6 +33,7 @@ import {
   Upload,
   Eye,
   Split,
+  Crop,
   MousePointer2,
   LogOut,
   Crown,
@@ -64,6 +65,7 @@ import { LightingControls } from "@/src/components/LightingControls";
 import { Histogram } from "@/src/components/Histogram";
 import { Filmstrip } from "@/src/components/Filmstrip";
 import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
+import { CropOverlay } from "@/src/components/CropOverlay";
 import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
 import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
@@ -99,6 +101,61 @@ const fixImageUrlLocal = (url: string) => {
 
 // Initialize Gemini AI (Free Tier)
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null
+    };
+  }
+
+  public static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  public componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  public render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6 text-center">
+          <div className="max-w-md space-y-4">
+            <h1 className="text-2xl font-bold text-white uppercase tracking-widest">Algo salió mal</h1>
+            <p className="text-zinc-500 text-sm leading-relaxed">
+              La aplicación encontró un error inesperado al cargar.
+            </p>
+            <div className="p-4 bg-zinc-900 rounded-lg border border-zinc-800 text-left overflow-auto max-h-40">
+              <code className="text-[10px] text-red-400 font-mono">
+                {this.state.error?.toString()}
+              </code>
+            </div>
+            <Button 
+              className="bg-amber-500 hover:bg-amber-600 text-black font-bold text-xs uppercase tracking-widest"
+              onClick={() => window.location.reload()}
+            >
+              Recargar Aplicación
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [user, setUser] = React.useState<User | null>(null);
@@ -148,6 +205,9 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [isComparing, setIsComparing] = React.useState(false);
   const [compareValue, setCompareValue] = React.useState(50);
+  const [isCropping, setIsCropping] = React.useState(false);
+  const [isAnalyzing, setIsAnalyzing] = React.useState(false);
+  const imageRef = React.useRef<HTMLImageElement>(null);
   const [isPressing, setIsPressing] = React.useState(false);
   const [newPhotoUrl, setNewPhotoUrl] = React.useState("");
   const galleryRef = React.useRef<HTMLDivElement>(null);
@@ -461,21 +521,25 @@ export default function App() {
     [photos, selectedPhotoId]
   );
 
-  const updatePhotoSettings = React.useCallback((id: string, settings: LightingSettings) => {
-    // Update local state for immediate feedback
-    setPhotos(prev => prev.map(p => p.id === id ? { ...p, settings } : p));
-    
-    // Add to history
-    setHistory(prev => {
-      const photoHistory = prev[id] || [];
-      // Only add if settings are different from the last one
-      const lastSettings = photoHistory[photoHistory.length - 1];
-      if (JSON.stringify(lastSettings) === JSON.stringify(settings)) return prev;
+  const updatePhotoSettings = React.useCallback((id: string, updates: Partial<LightingSettings>) => {
+    setPhotos(prev => {
+      const photo = prev.find(p => p.id === id);
+      if (!photo) return prev;
       
-      return {
-        ...prev,
-        [id]: [...photoHistory, settings].slice(-20) // Keep last 20 steps
-      };
+      const newSettings = { ...photo.settings, ...updates };
+      
+      // Update history
+      setHistory(hPrev => {
+        const photoHistory = hPrev[id] || [];
+        const lastSettings = photoHistory[photoHistory.length - 1];
+        if (JSON.stringify(lastSettings) === JSON.stringify(newSettings)) return hPrev;
+        return {
+          ...hPrev,
+          [id]: [...photoHistory, newSettings].slice(-20)
+        };
+      });
+
+      return prev.map(p => p.id === id ? { ...p, settings: newSettings } : p);
     });
   }, []);
 
@@ -875,28 +939,31 @@ export default function App() {
       const base64Data = await base64Promise;
       const base64Content = base64Data.split(',')[1];
 
-      // Call Gemini 3 Flash (Free Tier)
       const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-1.5-flash",
         contents: [
           {
             role: "user",
             parts: [
-              { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional y natural. 
-              Evita ajustes extremos que saturen o cambien drásticamente el color original.
+              { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional, equilibrada y natural. 
+              IMPORTANTE: 
+              - Evita ajustes extremos. No quemes las altas luces ni empastes las sombras.
+              - Si la foto ya está bien expuesta, mantén los valores cerca de 100 (neutro).
+              - El objetivo es un look orgánico, no artificial.
+              
               Responde ÚNICAMENTE con un objeto JSON con estos campos:
-              - brightness (80-120, 100 es neutro)
-              - contrast (90-130, 100 es neutro)
-              - saturation (90-120, 100 es neutro)
-              - exposure (-1 a 1, 0 es neutro)
-              - warmth (90-110, 100 es neutro)
-              - tint (95-105, 100 es neutro)
-              - vibrance (100-130, 100 es neutro)
-              - clarity (0-30, 0 es neutro)
-              - highlights (80-120, 100 es neutro)
-              - shadows (80-120, 100 es neutro)
-              - whites (90-110, 100 es neutro)
-              - blacks (90-110, 100 es neutro)` },
+              - brightness (95-110, 100 es neutro)
+              - contrast (95-115, 100 es neutro)
+              - saturation (95-110, 100 es neutro)
+              - exposure (-0.5 a 0.5, 0 es neutro)
+              - warmth (95-105, 100 es neutro)
+              - tint (98-102, 100 es neutro)
+              - vibrance (100-115, 100 es neutro)
+              - clarity (0-15, 0 es neutro)
+              - highlights (90-110, 100 es neutro)
+              - shadows (90-110, 100 es neutro)
+              - whites (95-105, 100 es neutro)
+              - blacks (95-105, 100 es neutro)` },
               {
                 inlineData: {
                   mimeType: blob.type || "image/jpeg",
@@ -936,7 +1003,6 @@ export default function App() {
       console.error("AI Enhance error:", error);
       toast.error("Error al usar la IA. Usando mejora automática básica.", { id: "ai-enhance" });
       
-      // Fallback to basic enhancement
       const fallbackSettings: LightingSettings = {
         ...DEFAULT_SETTINGS,
         brightness: 115,
@@ -948,6 +1014,74 @@ export default function App() {
       updatePhotoSettings(id, fallbackSettings);
     } finally {
       setIsAutoEnhancing(false);
+    }
+  };
+
+  const analyzePhotoWithIA = async (id: string) => {
+    const photo = photos.find(p => p.id === id);
+    if (!photo) return;
+
+    setIsAnalyzing(true);
+    const toastId = toast.loading("Analizando imagen con Gemini...");
+
+    try {
+      const response = await fetch(fixImageUrl(photo.url));
+      const blob = await response.blob();
+      const reader = new FileReader();
+      
+      const imageData = await new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+        reader.readAsDataURL(blob);
+      });
+
+      const prompt = `Analiza esta fotografía y devuelve un objeto JSON con:
+      1. "title": Un título creativo y corto (máx 30 caracteres).
+      2. "description": Una descripción breve de la escena.
+      3. "tags": Un array de 5 etiquetas relevantes.
+      4. "presetSuggestion": El nombre de uno de estos presets que mejor le iría: "Cine Noir", "Urbano Brutalista", "Boda Elegante", "Amanecer Cálido", "Golden Hour Pro", "Retrato Suave".
+      
+      Responde SOLO con el JSON.`;
+
+      const result = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: prompt },
+              { inlineData: { data: imageData, mimeType: blob.type } }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const analysis = JSON.parse(result.text);
+
+      setPhotos(prev => prev.map(p => p.id === id ? { 
+        ...p, 
+        title: analysis.title || p.title,
+        description: analysis.description || p.description,
+        tags: analysis.tags || p.tags
+      } : p));
+
+      await updateDoc(doc(db, "photos", id), { 
+        title: analysis.title,
+        description: analysis.description,
+        tags: analysis.tags
+      });
+
+      toast.success("Análisis completado", {
+        description: `Sugerencia: ${analysis.presetSuggestion}`,
+        id: toastId
+      });
+    } catch (error) {
+      console.error("AI Analysis error:", error);
+      toast.error("Error al analizar la imagen", { id: toastId });
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -1332,7 +1466,7 @@ export default function App() {
                               <div className="flex-1">
                                 <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Espacio</p>
                                 <div className="flex items-end justify-between">
-                                  <p className="text-xl font-bold text-white">{(totalStorageUsed / (1024 * 1024)).toFixed(1)}MB</p>
+                                  <p className="text-xl font-bold text-white">{Number(totalStorageUsed / (1024 * 1024)).toFixed(1)}MB</p>
                                   <p className="text-[9px] text-zinc-500 mb-1">de {userProfile?.plan === 'studio' ? '1TB' : userProfile?.plan === 'pro' ? '50GB' : '2GB'}</p>
                                 </div>
                                 <div className="mt-2 h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
@@ -1620,14 +1754,31 @@ export default function App() {
                   <Split className="w-3 h-3" />
                   {isComparing ? 'Viendo' : 'Comparar'}
                 </Button>
+
+                <Button 
+                  variant={isCropping ? "default" : "outline"} 
+                  size="sm" 
+                  className={`h-8 ${isCropping ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  onClick={() => setIsCropping(!isCropping)}
+                >
+                  <Crop className="w-3 h-3" />
+                  {isCropping ? 'Listo' : 'Recortar'}
+                </Button>
+
                 <div className="flex items-center bg-zinc-900 rounded-lg p-1 mr-4">
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}><ZoomOut className="w-3.5 h-3.5" /></Button>
                   <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.min(5, z + 0.1))}><ZoomIn className="w-3.5 h-3.5" /></Button>
                 </div>
-                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && smartEnhance(selectedPhoto.id)}>
-                  <Sparkles className="w-3 h-3 text-amber-500" />
-                  IA Smart
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" 
+                  onClick={() => selectedPhoto && analyzePhotoWithIA(selectedPhoto.id)}
+                  disabled={isAnalyzing}
+                >
+                  <Zap className="w-3 h-3 text-amber-500" />
+                  {isAnalyzing ? 'Analizando...' : 'Análisis IA'}
                 </Button>
                 <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
                   <RotateCcw className="w-3 h-3" />
@@ -1768,21 +1919,26 @@ export default function App() {
                   onMouseLeave={handleMouseUp}
                   onDoubleClick={resetZoom}
                 >
+                  {selectedPhoto && (
+                    <div className="absolute top-4 right-4 z-50 pointer-events-none">
+                      <Histogram settings={selectedPhoto.settings} imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} />
+                    </div>
+                  )}
                   {!selectedPhoto ? (
                     <div className="text-center p-8">
                       <ImageIcon className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
                       <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
                     </div>
                   ) : (
-                    <div 
-                      className="relative flex items-center justify-center"
-                      style={{ 
-                        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                        width: '90%',
-                        height: '90%',
-                        transition: isDragging ? 'none' : 'transform 0.2s cubic-bezier(0.2, 0, 0, 1)'
-                      }}
-                    >
+                      <div 
+                        className="relative flex items-center justify-center"
+                        style={{ 
+                          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                          width: '90%',
+                          height: '90%',
+                          transition: 'none'
+                        }}
+                      >
                       <div className="relative max-w-full max-h-full flex items-center justify-center">
                         {/* Original Image (Underneath) */}
                         {isComparing && (
@@ -1801,6 +1957,7 @@ export default function App() {
 
                         {/* Edited Image */}
                         <img 
+                          ref={imageRef}
                           src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
                           alt={selectedPhoto.title}
                           className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
@@ -1815,6 +1972,15 @@ export default function App() {
                           referrerPolicy="no-referrer"
                           draggable={false}
                         />
+
+                        {/* Crop Overlay */}
+                        {isCropping && (
+                          <CropOverlay 
+                            settings={selectedPhoto.settings}
+                            onCropChange={(updates) => updatePhotoSettings(selectedPhoto.id, updates)}
+                            imageRect={imageRef.current?.getBoundingClientRect() || null}
+                          />
+                        )}
 
                         {/* Comparison Slider Handle */}
                         {isComparing && (
@@ -1871,16 +2037,27 @@ export default function App() {
                   {selectedPhoto && (
                     <div className="space-y-10">
                       {/* Histogram Section */}
-                      <div className="space-y-4">
-                        <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
-                          Histograma
-                          <Activity className="w-3 h-3" />
-                        </h4>
-                        <Histogram 
-                        settings={selectedPhoto.settings} 
-                        imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)}
-                      />
-                      </div>
+                      {/* AI Information Section */}
+                      {selectedPhoto.description && (
+                        <div className="space-y-4">
+                          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                            Análisis IA
+                            <Sparkles className="w-3 h-3 text-amber-500" />
+                          </h4>
+                          <div className="space-y-3">
+                            <p className="text-[11px] text-zinc-400 leading-relaxed italic">
+                              "{selectedPhoto.description}"
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedPhoto.tags?.map((tag, idx) => (
+                                <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
+                                  {tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Main Controls */}
                       <LightingControls 
@@ -1929,7 +2106,7 @@ export default function App() {
               <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
                 <span className="text-zinc-500">Espacio Utilizado</span>
                 <span className="text-white">
-                  {((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)} MB / 
+                  {Number((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)} MB / 
                   {(userProfile?.plan === 'studio' ? 1024 : userProfile?.plan === 'pro' ? 50 : 2)} GB
                 </span>
               </div>

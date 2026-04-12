@@ -4,6 +4,7 @@ export interface Photo {
   thumbnailUrl?: string; // For RAW files preview
   title: string;
   description?: string;
+  tags?: string[];
   settings: LightingSettings;
   userId?: string;
   createdAt?: any;

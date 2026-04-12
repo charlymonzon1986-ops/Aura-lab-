@@ -41,9 +41,11 @@ const ControlItem = React.memo(function ControlItem({
   settingKey, displayValue, locked, onSliderChange, onSliderCommit
 }: ControlItemProps) {
   const showVal = displayValue || (
-    value > 0 && !['brightness', 'contrast', 'saturation'].includes(settingKey as string)
-      ? `+${value.toFixed(1)}`
-      : value.toFixed(1)
+    typeof value === 'number' 
+      ? (value > 0 && !['brightness', 'contrast', 'saturation'].includes(settingKey as string)
+          ? `+${value.toFixed(1)}`
+          : value.toFixed(1))
+      : '0.0'
   );
 
   const handleChange = React.useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -86,7 +88,7 @@ export const LightingControls = React.memo(function LightingControls({
 
   const [localSettings, setLocalSettings] = React.useState(settings);
   const localRef = React.useRef(localSettings);
-  const rafRef = React.useRef<number>();
+  const rafRef = React.useRef<number | null>(null);
 
   // Sync cuando cambia preset o foto seleccionada
   React.useEffect(() => {

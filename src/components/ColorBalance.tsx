@@ -35,7 +35,9 @@ function ColorWheel({ label, value, onChange }: ColorWheelProps) {
     const saturation = Math.min(100, (distance / radius) * 100);
     
     if (distance <= radius || isDragging) {
-      onChange(`hsla(${angle.toFixed(0)}, ${saturation.toFixed(0)}%, 50%, 0.5)`);
+      const safeAngle = typeof angle === 'number' ? angle : 0;
+      const safeSaturation = typeof saturation === 'number' ? saturation : 0;
+      onChange(`hsla(${safeAngle.toFixed(0)}, ${safeSaturation.toFixed(0)}%, 50%, 0.5)`);
     }
   };
 
