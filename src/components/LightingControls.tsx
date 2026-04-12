@@ -1,30 +1,11 @@
 import * as React from "react";
 import { motion } from "motion/react";
-import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { ColorBalance } from "./ColorBalance";
 import { 
-  Sun, 
-  Contrast, 
-  Droplets, 
-  Zap, 
-  Thermometer, 
-  Lock, 
-  Sparkles, 
-  Eye, 
-  Layers, 
-  CircleDot,
-  Palette,
-  Wind,
-  RotateCw,
-  FlipHorizontal,
-  FlipVertical,
-  Scissors,
-  CloudFog,
-  Waves,
-  Box,
-  Focus,
-  Ghost
+  Sun, Contrast, Droplets, Zap, Thermometer, Lock, Sparkles,
+  Eye, Layers, CircleDot, Palette, Wind, RotateCw, FlipHorizontal,
+  FlipVertical, Scissors, CloudFog, Waves, Box, Focus, Ghost
 } from "lucide-react";
 import { LightingSettings, PlanType } from "@/src/types";
 import { Button } from "@/components/ui/button";
@@ -38,29 +19,87 @@ interface LightingControlsProps {
   isAutoEnhancing: boolean;
 }
 
-export const LightingControls = React.memo(function LightingControls({ 
-  settings, 
-  onChange, 
-  userPlan,
-  onSmartEnhance,
-  isAutoEnhancing
-}: LightingControlsProps) {
-  const [localSettings, setLocalSettings] = React.useState(settings);
+// ── ControlItem fuera del componente padre ────────────────────────────────────
+// Esto es clave: si está adentro se recrea en cada render y rompe el memo.
+interface ControlItemProps {
+  label: string;
+  icon: any;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  settingKey: keyof LightingSettings;
+  requiredPlan?: PlanType;
+  displayValue?: string;
+  locked: boolean;
+  onSliderChange: (key: keyof LightingSettings, val: number) => void;
+  onSliderCommit: (key: keyof LightingSettings, val: number) => void;
+}
 
-  // Sync local settings when props change (e.g. preset applied)
+const ControlItem = React.memo(function ControlItem({
+  label, icon: Icon, value, min, max, step = 0.1,
+  settingKey, displayValue, locked, onSliderChange, onSliderCommit
+}: ControlItemProps) {
+  const showVal = displayValue || (
+    value > 0 && !['brightness', 'contrast', 'saturation'].includes(settingKey as string)
+      ? `+${value.toFixed(1)}`
+      : value.toFixed(1)
+  );
+
+  const handleChange = React.useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!locked) onSliderChange(settingKey, parseFloat(e.target.value));
+  }, [locked, settingKey, onSliderChange]);
+
+  const handlePointerUp = React.useCallback((e: React.PointerEvent<HTMLInputElement>) => {
+    if (!locked) onSliderCommit(settingKey, parseFloat((e.target as HTMLInputElement).value));
+  }, [locked, settingKey, onSliderCommit]);
+
+  return (
+    <div className={`space-y-2 ${locked ? 'opacity-40 select-none pointer-events-none' : ''} relative transition-opacity duration-300`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-zinc-400">
+          <Icon className="w-3.5 h-3.5" />
+          <Label className="text-[10px] font-bold uppercase tracking-wider">{label}</Label>
+          {locked && <Lock className="w-3 h-3 text-amber-500 ml-1" />}
+        </div>
+        <span className="text-[10px] font-mono text-zinc-500">{showVal}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={locked}
+        className="aura-slider"
+        onChange={handleChange}
+        onPointerUp={handlePointerUp}
+      />
+    </div>
+  );
+});
+
+// ── Componente principal ──────────────────────────────────────────────────────
+export const LightingControls = React.memo(function LightingControls({ 
+  settings, onChange, userPlan, onSmartEnhance, isAutoEnhancing
+}: LightingControlsProps) {
+
+  const [localSettings, setLocalSettings] = React.useState(settings);
+  const localRef = React.useRef(localSettings);
+  const rafRef = React.useRef<number>();
+
+  // Sync cuando cambia preset o foto seleccionada
   React.useEffect(() => {
     setLocalSettings(settings);
+    localRef.current = settings;
   }, [settings]);
 
-  const updateCSSVariables = (key: keyof LightingSettings, val: any) => {
+  // Escribe CSS variables — solo se llama via RAF, nunca dispara re-render
+  const updateCSS = React.useCallback((s: LightingSettings) => {
     const root = document.documentElement;
-    const s = { ...localSettings, [key]: val };
-
-    // Advanced math for accurate rendering (matching getFilterString)
     const whiteAdj = (s.whites - 100) / 2;
     const blackAdj = (s.blacks - 100) / 2;
     const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
-    
     const highAdj = (s.highlights - 100) / 4;
     const shadAdj = (s.shadows - 100) / 4;
     const effectiveContrast = s.contrast + (s.clarity / 2) + highAdj - shadAdj;
@@ -68,100 +107,55 @@ export const LightingControls = React.memo(function LightingControls({
     root.style.setProperty('--img-brightness', `${effectiveBrightness}%`);
     root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
     root.style.setProperty('--img-saturate', `${s.saturation * (s.vibrance / 100)}%`);
-    
-    const sepiaVal = s.warmth > 0 ? s.warmth / 2 : 0;
-    const warmthHue = s.warmth < 0 ? s.warmth / 2 : 0;
-    const tintHue = s.tint / 2;
-    root.style.setProperty('--img-sepia', `${sepiaVal}%`);
-    root.style.setProperty('--img-hue', `${warmthHue + tintHue}deg`);
-    root.style.setProperty('--img-exposure', `1`);
+    root.style.setProperty('--img-sepia', `${s.warmth > 0 ? s.warmth / 2 : 0}%`);
+    root.style.setProperty('--img-hue', `${(s.warmth < 0 ? s.warmth / 2 : 0) + s.tint / 2}deg`);
+    root.style.setProperty('--img-vignette', `${s.vignette / 100}`);
+    root.style.setProperty('--img-rotate', `${s.rotation}deg`);
+    root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
+    root.style.setProperty('--img-flip-y', s.flipY ? '-1' : '1');
+    root.style.setProperty('--img-sepia-val', `${s.sepia}%`);
+    root.style.setProperty('--img-blur', `${s.blur}px`);
+    root.style.setProperty('--img-crop-top', `${s.cropTop}%`);
+    root.style.setProperty('--img-crop-bottom', `${s.cropBottom}%`);
+    root.style.setProperty('--img-crop-left', `${s.cropLeft}%`);
+    root.style.setProperty('--img-crop-right', `${s.cropRight}%`);
+  }, []);
 
-    if (key === 'vignette') root.style.setProperty('--img-vignette', `${val / 100}`);
-    if (key === 'rotation') root.style.setProperty('--img-rotate', `${val}deg`);
-    if (key === 'flipX') root.style.setProperty('--img-flip-x', val ? '-1' : '1');
-    if (key === 'flipY') root.style.setProperty('--img-flip-y', val ? '-1' : '1');
-    if (key === 'sepia') root.style.setProperty('--img-sepia-val', `${val}%`);
-    if (key === 'blur') root.style.setProperty('--img-blur', `${val}px`);
-    if (key === 'cropTop') root.style.setProperty('--img-crop-top', `${val}%`);
-    if (key === 'cropBottom') root.style.setProperty('--img-crop-bottom', `${val}%`);
-    if (key === 'cropLeft') root.style.setProperty('--img-crop-left', `${val}%`);
-    if (key === 'cropRight') root.style.setProperty('--img-crop-right', `${val}%`);
-  };
+  // Solo actualiza preview — no dispara re-render del padre
+  const handleSliderChange = React.useCallback((key: keyof LightingSettings, val: number) => {
+    const next = { ...localRef.current, [key]: val };
+    localRef.current = next;
+    setLocalSettings(next); // re-render solo de LightingControls, no de App
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => updateCSS(next));
+  }, [updateCSS]);
 
-  const handleChange = (key: keyof LightingSettings, value: any) => {
-    const val = Array.isArray(value) ? value[0] : value;
-    setLocalSettings(prev => ({ ...prev, [key]: val }));
-    updateCSSVariables(key, val);
-  };
+  // Guarda en estado global solo al soltar — esto sí dispara App
+  const handleSliderCommit = React.useCallback((key: keyof LightingSettings, val: number) => {
+    const next = { ...localRef.current, [key]: val };
+    localRef.current = next;
+    onChange(next);
+  }, [onChange]);
 
-  const handleCommit = (key: keyof LightingSettings, value: any) => {
-    const val = Array.isArray(value) ? value[0] : value;
-    const newSettings = { ...localSettings, [key]: val };
-    setLocalSettings(newSettings);
-    onChange(newSettings);
-  };
+  const handleColorBalanceChange = React.useCallback((
+    key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string
+  ) => {
+    const next = { ...localRef.current, [key]: value };
+    localRef.current = next;
+    setLocalSettings(next);
+    onChange(next);
+  }, [onChange]);
 
-  const handleColorBalanceChange = (key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string) => {
-    const newSettings = { ...localSettings, [key]: value };
-    setLocalSettings(newSettings);
-    onChange(newSettings);
-  };
+  const isLocked = React.useCallback((requiredPlan: PlanType) => {
+    const levels: Record<PlanType, number> = { free: 0, pro: 1, studio: 2 };
+    return levels[userPlan] < levels[requiredPlan];
+  }, [userPlan]);
 
-  const isLocked = (requiredPlan: PlanType) => {
-    const planLevels: Record<PlanType, number> = { free: 0, pro: 1, studio: 2 };
-    return planLevels[userPlan] < planLevels[requiredPlan];
-  };
-
-  const ControlItem = ({ 
-    label, 
-    icon: Icon, 
-    value, 
-    min, 
-    max, 
-    step = 0.1, 
-    settingKey, 
-    requiredPlan = 'free',
-    displayValue
-  }: { 
-    label: string, 
-    icon: any, 
-    value: number, 
-    min: number, 
-    max: number, 
-    step?: number, 
-    settingKey: keyof LightingSettings,
-    requiredPlan?: PlanType,
-    displayValue?: string
-  }) => {
-    const locked = isLocked(requiredPlan);
-
-    return (
-      <div className={`space-y-3 ${locked ? 'opacity-40 select-none pointer-events-none' : ''} relative group transition-opacity duration-300`}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-zinc-400">
-            <Icon className="w-3.5 h-3.5" />
-            <Label className="text-[10px] font-bold uppercase tracking-wider">{label}</Label>
-            {locked && <Lock className="w-3 h-3 text-amber-500 ml-1" />}
-          </div>
-          <span className="text-[10px] font-mono text-zinc-500">
-            {displayValue || (value > 0 && !['brightness', 'contrast', 'saturation'].includes(settingKey) ? `+${value.toFixed(1)}` : value.toFixed(1))}
-          </span>
-        </div>
-        <Slider
-          value={[value]}
-          min={min}
-          max={max}
-          step={step}
-          onValueChange={(v) => !locked && handleChange(settingKey, v)}
-          onValueCommit={(v) => !locked && handleCommit(settingKey, v)}
-          className="py-1 cursor-pointer"
-        />
-      </div>
-    );
-  };
+  const s = localSettings;
 
   return (
     <div className="space-y-10 pb-20">
+
       {/* AI Smart Enhance */}
       <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 to-transparent border border-amber-500/20 space-y-3">
         <div className="flex items-center justify-between">
@@ -174,7 +168,7 @@ export const LightingControls = React.memo(function LightingControls({
         <p className="text-[10px] text-zinc-500 leading-relaxed">
           Optimiza automáticamente la iluminación y el color usando Gemini 3 Flash.
         </p>
-        <Button 
+        <Button
           className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold text-[10px] uppercase tracking-wider h-9 rounded-xl shadow-lg shadow-amber-500/20"
           onClick={onSmartEnhance}
           disabled={isAutoEnhancing}
@@ -183,9 +177,7 @@ export const LightingControls = React.memo(function LightingControls({
             <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
               <RotateCw className="w-3.5 h-3.5" />
             </motion.div>
-          ) : (
-            "Aplicar Mejora IA"
-          )}
+          ) : "Aplicar Mejora IA"}
         </Button>
       </div>
 
@@ -198,72 +190,38 @@ export const LightingControls = React.memo(function LightingControls({
         <div className="space-y-5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex-1">
-              <ControlItem label="Rotación" icon={RotateCw} value={localSettings.rotation} min={-180} max={180} step={1} settingKey="rotation" requiredPlan="pro" />
+              <ControlItem label="Rotación" icon={RotateCw} value={s.rotation} min={-180} max={180} step={1}
+                settingKey="rotation" requiredPlan="pro" locked={isLocked('pro')}
+                onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
             </div>
             <div className="flex gap-1 pt-6">
-              <Button 
-                variant="outline" 
-                size="icon" 
-                className="h-8 w-8 border-zinc-800"
-                onClick={() => {
-                  const newRot = ((localSettings.rotation - 90 + 180) % 360) - 180;
-                  handleChange('rotation', newRot);
-                  handleCommit('rotation', newRot);
-                }}
-                disabled={isLocked('pro')}
-              >
-                <RotateCw className="w-3.5 h-3.5 rotate-180" />
-              </Button>
-              <Button 
-                variant="outline" 
-                size="icon" 
-                className="h-8 w-8 border-zinc-800"
-                onClick={() => {
-                  const newRot = ((localSettings.rotation + 90 + 180) % 360) - 180;
-                  handleChange('rotation', newRot);
-                  handleCommit('rotation', newRot);
-                }}
-                disabled={isLocked('pro')}
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </Button>
+              <Button variant="outline" size="icon" className="h-8 w-8 border-zinc-800"
+                onClick={() => { const v = ((s.rotation - 90 + 180) % 360) - 180; handleSliderChange('rotation', v); handleSliderCommit('rotation', v); }}
+                disabled={isLocked('pro')}><RotateCw className="w-3.5 h-3.5 rotate-180" /></Button>
+              <Button variant="outline" size="icon" className="h-8 w-8 border-zinc-800"
+                onClick={() => { const v = ((s.rotation + 90 + 180) % 360) - 180; handleSliderChange('rotation', v); handleSliderCommit('rotation', v); }}
+                disabled={isLocked('pro')}><RotateCw className="w-3.5 h-3.5" /></Button>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Button 
-              variant="outline" 
-              size="sm" 
-              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${localSettings.flipX ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
-              onClick={() => {
-                const newVal = !localSettings.flipX;
-                handleChange('flipX', newVal);
-                handleCommit('flipX', newVal);
-              }}
-              disabled={isLocked('pro')}
-            >
-              <FlipHorizontal className="w-3.5 h-3.5 mr-2" />
-              Espejo H
+            <Button variant="outline" size="sm"
+              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${s.flipX ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
+              onClick={() => { const v = !s.flipX; handleSliderChange('flipX', v as any); handleSliderCommit('flipX', v as any); }}
+              disabled={isLocked('pro')}>
+              <FlipHorizontal className="w-3.5 h-3.5 mr-2" />Espejo H
             </Button>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${localSettings.flipY ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
-              onClick={() => {
-                const newVal = !localSettings.flipY;
-                handleChange('flipY', newVal);
-                handleCommit('flipY', newVal);
-              }}
-              disabled={isLocked('pro')}
-            >
-              <FlipVertical className="w-3.5 h-3.5 mr-2" />
-              Espejo V
+            <Button variant="outline" size="sm"
+              className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${s.flipY ? 'bg-amber-500/10 border-amber-500/50 text-amber-500' : 'text-zinc-400'}`}
+              onClick={() => { const v = !s.flipY; handleSliderChange('flipY', v as any); handleSliderCommit('flipY', v as any); }}
+              disabled={isLocked('pro')}>
+              <FlipVertical className="w-3.5 h-3.5 mr-2" />Espejo V
             </Button>
           </div>
           <div className="pt-2 space-y-4">
-            <ControlItem label="Recorte Sup" icon={Scissors} value={localSettings.cropTop} min={0} max={50} settingKey="cropTop" requiredPlan="studio" />
-            <ControlItem label="Recorte Inf" icon={Scissors} value={localSettings.cropBottom} min={0} max={50} settingKey="cropBottom" requiredPlan="studio" />
-            <ControlItem label="Recorte Izq" icon={Scissors} value={localSettings.cropLeft} min={0} max={50} settingKey="cropLeft" requiredPlan="studio" />
-            <ControlItem label="Recorte Der" icon={Scissors} value={localSettings.cropRight} min={0} max={50} settingKey="cropRight" requiredPlan="studio" />
+            <ControlItem label="Recorte Sup" icon={Scissors} value={s.cropTop} min={0} max={50} settingKey="cropTop" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+            <ControlItem label="Recorte Inf" icon={Scissors} value={s.cropBottom} min={0} max={50} settingKey="cropBottom" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+            <ControlItem label="Recorte Izq" icon={Scissors} value={s.cropLeft} min={0} max={50} settingKey="cropLeft" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+            <ControlItem label="Recorte Der" icon={Scissors} value={s.cropRight} min={0} max={50} settingKey="cropRight" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
           </div>
         </div>
       </div>
@@ -272,12 +230,12 @@ export const LightingControls = React.memo(function LightingControls({
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Ajustes Básicos</h4>
         <div className="space-y-5">
-          <ControlItem label="Exposición" icon={Zap} value={localSettings.exposure} min={-5} max={5} step={0.01} settingKey="exposure" />
-          <ControlItem label="Contraste" icon={Contrast} value={localSettings.contrast} min={0} max={200} step={1} settingKey="contrast" />
-          <ControlItem label="Brillo" icon={Sun} value={localSettings.brightness} min={0} max={200} step={1} settingKey="brightness" />
-          <ControlItem label="Saturación" icon={Droplets} value={localSettings.saturation} min={0} max={200} step={1} settingKey="saturation" />
-          <ControlItem label="Temperatura" icon={Thermometer} value={localSettings.warmth} min={-100} max={100} step={1} settingKey="warmth" />
-          <ControlItem label="Tinte" icon={Palette} value={localSettings.tint} min={-100} max={100} step={1} settingKey="tint" requiredPlan="pro" />
+          <ControlItem label="Exposición" icon={Zap} value={s.exposure} min={-5} max={5} step={0.01} settingKey="exposure" locked={false} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Contraste" icon={Contrast} value={s.contrast} min={0} max={200} step={1} settingKey="contrast" locked={false} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Brillo" icon={Sun} value={s.brightness} min={0} max={200} step={1} settingKey="brightness" locked={false} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Saturación" icon={Droplets} value={s.saturation} min={0} max={200} step={1} settingKey="saturation" locked={false} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Temperatura" icon={Thermometer} value={s.warmth} min={-100} max={100} step={1} settingKey="warmth" locked={false} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Tinte" icon={Palette} value={s.tint} min={-100} max={100} step={1} settingKey="tint" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
         </div>
       </div>
 
@@ -285,10 +243,10 @@ export const LightingControls = React.memo(function LightingControls({
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Luz y Tono</h4>
         <div className="space-y-5">
-          <ControlItem label="Altas Luces" icon={Sun} value={localSettings.highlights} min={0} max={200} settingKey="highlights" requiredPlan="pro" />
-          <ControlItem label="Sombras" icon={Wind} value={localSettings.shadows} min={0} max={200} settingKey="shadows" requiredPlan="pro" />
-          <ControlItem label="Blancos" icon={CircleDot} value={localSettings.whites} min={0} max={200} settingKey="whites" requiredPlan="pro" />
-          <ControlItem label="Negros" icon={CircleDot} value={localSettings.blacks} min={0} max={200} settingKey="blacks" requiredPlan="pro" />
+          <ControlItem label="Altas Luces" icon={Sun} value={s.highlights} min={0} max={200} settingKey="highlights" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Sombras" icon={Wind} value={s.shadows} min={0} max={200} settingKey="shadows" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Blancos" icon={CircleDot} value={s.whites} min={0} max={200} settingKey="whites" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Negros" icon={CircleDot} value={s.blacks} min={0} max={200} settingKey="blacks" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
         </div>
       </div>
 
@@ -296,10 +254,10 @@ export const LightingControls = React.memo(function LightingControls({
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Presencia</h4>
         <div className="space-y-5">
-          <ControlItem label="Claridad" icon={Eye} value={localSettings.clarity} min={0} max={100} settingKey="clarity" requiredPlan="pro" />
-          <ControlItem label="Vibrance" icon={Sparkles} value={localSettings.vibrance} min={0} max={200} settingKey="vibrance" requiredPlan="pro" />
-          <ControlItem label="Textura" icon={Layers} value={localSettings.texture} min={0} max={100} settingKey="texture" requiredPlan="studio" />
-          <ControlItem label="Dehaze" icon={CloudFog} value={localSettings.dehaze} min={0} max={100} settingKey="dehaze" requiredPlan="studio" />
+          <ControlItem label="Claridad" icon={Eye} value={s.clarity} min={0} max={100} settingKey="clarity" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Vibrance" icon={Sparkles} value={s.vibrance} min={0} max={200} settingKey="vibrance" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Textura" icon={Layers} value={s.texture} min={0} max={100} settingKey="texture" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Dehaze" icon={CloudFog} value={s.dehaze} min={0} max={100} settingKey="dehaze" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
         </div>
       </div>
 
@@ -312,16 +270,12 @@ export const LightingControls = React.memo(function LightingControls({
             <Palette className="w-3 h-3" />
           </div>
         </h4>
-        
         <div className={isLocked('pro') ? 'opacity-20 pointer-events-none grayscale' : ''}>
-          <ColorBalance 
-            shadows={localSettings.shadowTint}
-            midtones={localSettings.midtoneTint}
-            highlights={localSettings.highlightTint}
+          <ColorBalance
+            shadows={s.shadowTint} midtones={s.midtoneTint} highlights={s.highlightTint}
             onChange={handleColorBalanceChange}
           />
         </div>
-
         {isLocked('pro') && (
           <div className="absolute inset-0 top-8 flex flex-col items-center justify-center bg-zinc-950/40 backdrop-blur-[1px] rounded-lg">
             <Lock className="w-4 h-4 text-amber-500 mb-2" />
@@ -334,10 +288,10 @@ export const LightingControls = React.memo(function LightingControls({
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Detalle y Óptica</h4>
         <div className="space-y-5">
-          <ControlItem label="Nitidez" icon={Focus} value={localSettings.sharpening} min={0} max={100} settingKey="sharpening" requiredPlan="pro" />
-          <ControlItem label="Red. Ruido" icon={Waves} value={localSettings.noiseReduction} min={0} max={100} settingKey="noiseReduction" requiredPlan="studio" />
-          <ControlItem label="Viñeteo" icon={CircleDot} value={localSettings.vignette} min={0} max={100} settingKey="vignette" requiredPlan="pro" />
-          <ControlItem label="Distorsión" icon={Box} value={localSettings.distortion} min={-50} max={50} settingKey="distortion" requiredPlan="studio" />
+          <ControlItem label="Nitidez" icon={Focus} value={s.sharpening} min={0} max={100} settingKey="sharpening" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Red. Ruido" icon={Waves} value={s.noiseReduction} min={0} max={100} settingKey="noiseReduction" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Viñeteo" icon={CircleDot} value={s.vignette} min={0} max={100} settingKey="vignette" locked={isLocked('pro')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Distorsión" icon={Box} value={s.distortion} min={-50} max={50} settingKey="distortion" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
         </div>
       </div>
 
@@ -345,13 +299,12 @@ export const LightingControls = React.memo(function LightingControls({
       <div className="space-y-6">
         <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Efectos Creativos</h4>
         <div className="space-y-5">
-          <ControlItem label="Sepia" icon={Palette} value={localSettings.sepia} min={0} max={100} settingKey="sepia" requiredPlan="studio" />
-          <ControlItem label="Grano" icon={Ghost} value={localSettings.grain} min={0} max={100} settingKey="grain" requiredPlan="studio" />
-          <ControlItem label="Desenfoque" icon={CloudFog} value={localSettings.blur} min={0} max={20} step={0.1} settingKey="blur" requiredPlan="studio" />
+          <ControlItem label="Sepia" icon={Palette} value={s.sepia} min={0} max={100} settingKey="sepia" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Grano" icon={Ghost} value={s.grain} min={0} max={100} settingKey="grain" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+          <ControlItem label="Desenfoque" icon={CloudFog} value={s.blur} min={0} max={20} step={0.1} settingKey="blur" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
         </div>
       </div>
+
     </div>
   );
 });
-
-
