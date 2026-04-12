@@ -26,19 +26,23 @@ export function Histogram({ settings, imageUrl }: HistogramProps) {
     
     const calculate = () => {
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas || !img.width) return;
 
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) return;
 
+      // Use a fixed size for consistent calculation
       const size = 128;
       canvas.width = size;
       canvas.height = size;
 
+      ctx.clearRect(0, 0, size, size);
+      
+      // Apply filters from imageProcessing
       ctx.filter = getFilterString(settings);
-      ctx.drawImage(img, 0, 0, size, size);
-
+      
       try {
+        ctx.drawImage(img, 0, 0, size, size);
         const imageData = ctx.getImageData(0, 0, size, size);
         const pixels = imageData.data;
         
@@ -48,15 +52,27 @@ export function Histogram({ settings, imageUrl }: HistogramProps) {
         const lBins = new Array(256).fill(0);
 
         for (let i = 0; i < pixels.length; i += 4) {
-          rBins[pixels[i]]++;
-          gBins[pixels[i + 1]]++;
-          bBins[pixels[i + 2]]++;
+          const r = pixels[i];
+          const g = pixels[i + 1];
+          const b = pixels[i + 2];
           
-          const luma = Math.round(0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2]);
-          lBins[luma]++;
+          rBins[r]++;
+          gBins[g]++;
+          bBins[b]++;
+          
+          // Standard luminance formula
+          const luma = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+          lBins[Math.min(luma, 255)]++;
         }
 
-        const findMax = (bins: number[]) => Math.max(...bins, 1);
+        // Find max value to normalize, ignoring extreme spikes
+        const findMax = (bins: number[]) => {
+          // Ignore the very first and last bins if they are extreme (often happens with black/white borders)
+          const middleBins = bins.slice(1, 255);
+          const maxInMiddle = Math.max(...middleBins);
+          return Math.max(maxInMiddle, bins[0], bins[255], 1);
+        };
+        
         const maxVal = Math.max(findMax(rBins), findMax(gBins), findMax(bBins), findMax(lBins));
 
         setData({
@@ -66,7 +82,8 @@ export function Histogram({ settings, imageUrl }: HistogramProps) {
           l: lBins.map(v => (v / maxVal) * 100)
         });
       } catch (e) {
-        console.error("Histogram calculation error:", e);
+        console.error("Histogram calculation error (CORS?):", e);
+        // If it fails, we keep the previous data or show empty
       } finally {
         setIsLoading(false);
       }

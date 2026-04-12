@@ -1,7 +1,7 @@
 import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { 
   X,
   LayoutGrid, 
@@ -100,7 +100,7 @@ const fixImageUrlLocal = (url: string) => {
 };
 
 // Initialize Gemini AI (Free Tier)
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -939,30 +939,31 @@ export default function App() {
       const base64Data = await base64Promise;
       const base64Content = base64Data.split(',')[1];
 
-      const result = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
+      const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const result = await model.generateContent({
         contents: [
           {
             role: "user",
             parts: [
               { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional, equilibrada y natural. 
-              IMPORTANTE: 
-              - Evita ajustes extremos. No quemes las altas luces ni empastes las sombras.
-              - Si la foto ya está bien expuesta, mantén los valores cerca de 100 (neutro).
-              - El objetivo es un look orgánico, no artificial.
+              REGLAS ESTRICTAS:
+              - NO quemes las altas luces. Si la foto es brillante o tiene zonas blancas grandes, reduce 'highlights' y 'exposure'.
+              - NO satures en exceso. Mantén 'saturation' y 'vibrance' en niveles sutiles (cerca de 100).
+              - El objetivo es un revelado orgánico, similar a una película analógica de alta calidad.
+              - Si la foto ya está bien expuesta, devuelve valores neutros (100 para la mayoría, 0 para exposure).
               
               Responde ÚNICAMENTE con un objeto JSON con estos campos:
-              - brightness (95-110, 100 es neutro)
-              - contrast (95-115, 100 es neutro)
-              - saturation (95-110, 100 es neutro)
-              - exposure (-0.5 a 0.5, 0 es neutro)
-              - warmth (95-105, 100 es neutro)
-              - tint (98-102, 100 es neutro)
-              - vibrance (100-115, 100 es neutro)
-              - clarity (0-15, 0 es neutro)
-              - highlights (90-110, 100 es neutro)
-              - shadows (90-110, 100 es neutro)
-              - whites (95-105, 100 es neutro)
+              - brightness (95-105, 100 es neutro)
+              - contrast (98-108, 100 es neutro)
+              - saturation (98-105, 100 es neutro)
+              - exposure (-0.2 a 0.2, 0 es neutro)
+              - warmth (99-101, 100 es neutro)
+              - tint (99.5-100.5, 100 es neutro)
+              - vibrance (100-108, 100 es neutro)
+              - clarity (0-8, 0 es neutro)
+              - highlights (70-100, 100 es neutro)
+              - shadows (95-105, 100 es neutro)
+              - whites (85-100, 100 es neutro)
               - blacks (95-105, 100 es neutro)` },
               {
                 inlineData: {
@@ -973,12 +974,12 @@ export default function App() {
             ]
           }
         ],
-        config: {
+        generationConfig: {
           responseMimeType: "application/json"
         }
       });
 
-      const aiResponse = JSON.parse(result.text);
+      const aiResponse = JSON.parse(result.response.text());
       
       // Normalize AI response to match our internal ranges
       const normalizedAiResponse = { ...aiResponse };
@@ -1035,15 +1036,16 @@ export default function App() {
       });
 
       const prompt = `Analiza esta fotografía y devuelve un objeto JSON con:
-      1. "title": Un título creativo y corto (máx 30 caracteres).
-      2. "description": Una descripción breve de la escena.
-      3. "tags": Un array de 5 etiquetas relevantes.
+      1. "title": Un título creativo y corto en ESPAÑOL (máx 30 caracteres).
+      2. "description": Una descripción breve de la escena en ESPAÑOL.
+      3. "tags": Un array de 5 etiquetas relevantes en ESPAÑOL.
       4. "presetSuggestion": El nombre de uno de estos presets que mejor le iría: "Cine Noir", "Urbano Brutalista", "Boda Elegante", "Amanecer Cálido", "Golden Hour Pro", "Retrato Suave".
       
+      IMPORTANTE: Toda la respuesta de texto debe ser en ESPAÑOL.
       Responde SOLO con el JSON.`;
 
-      const result = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+      const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const result = await model.generateContent({
         contents: [
           {
             role: "user",
@@ -1053,12 +1055,12 @@ export default function App() {
             ]
           }
         ],
-        config: {
+        generationConfig: {
           responseMimeType: "application/json"
         }
       });
 
-      const analysis = JSON.parse(result.text);
+      const analysis = JSON.parse(result.response.text());
 
       setPhotos(prev => prev.map(p => p.id === id ? { 
         ...p, 
@@ -1919,11 +1921,6 @@ export default function App() {
                   onMouseLeave={handleMouseUp}
                   onDoubleClick={resetZoom}
                 >
-                  {selectedPhoto && (
-                    <div className="absolute top-4 right-4 z-50 pointer-events-none">
-                      <Histogram settings={selectedPhoto.settings} imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} />
-                    </div>
-                  )}
                   {!selectedPhoto ? (
                     <div className="text-center p-8">
                       <ImageIcon className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
@@ -2038,26 +2035,39 @@ export default function App() {
                     <div className="space-y-10">
                       {/* Histogram Section */}
                       {/* AI Information Section */}
-                      {selectedPhoto.description && (
-                        <div className="space-y-4">
-                          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
-                            Análisis IA
-                            <Sparkles className="w-3 h-3 text-amber-500" />
-                          </h4>
-                          <div className="space-y-3">
-                            <p className="text-[11px] text-zinc-400 leading-relaxed italic">
-                              "{selectedPhoto.description}"
-                            </p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {selectedPhoto.tags?.map((tag, idx) => (
-                                <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
-                                  {tag}
-                                </Badge>
-                              ))}
+                      <div className="space-y-6">
+                        {selectedPhoto.description && (
+                          <div className="space-y-4">
+                            <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                              Análisis IA
+                              <Sparkles className="w-3 h-3 text-amber-500" />
+                            </h4>
+                            <div className="space-y-3">
+                              <p className="text-[11px] text-zinc-400 leading-relaxed italic">
+                                "{selectedPhoto.description}"
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {selectedPhoto.tags?.map((tag, idx) => (
+                                  <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
                             </div>
                           </div>
+                        )}
+
+                        {/* Histogram Section */}
+                        <div className="space-y-4">
+                          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
+                            Histograma en Tiempo Real
+                          </h4>
+                          <Histogram 
+                            settings={selectedPhoto.settings} 
+                            imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          />
                         </div>
-                      )}
+                      </div>
 
                       {/* Main Controls */}
                       <LightingControls 
