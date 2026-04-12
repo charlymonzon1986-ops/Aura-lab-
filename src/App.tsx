@@ -38,6 +38,7 @@ import {
   Crown,
   Save,
   Trash2,
+  Edit2,
   Lock,
   CreditCard,
   CheckCircle2,
@@ -62,6 +63,7 @@ import axios from "axios";
 import { LightingControls } from "@/src/components/LightingControls";
 import { Histogram } from "@/src/components/Histogram";
 import { Filmstrip } from "@/src/components/Filmstrip";
+import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
 import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
 import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
@@ -496,13 +498,15 @@ export default function App() {
   }, [photos, selectedPhotoId, user]);
 
   const resetZoom = () => {
-    // Fit to screen logic
-    setZoom(0.8); // Default to 80% to see margins
+    setZoom(0.8);
     setPan({ x: 0, y: 0 });
   };
 
+  const imageStageRef = React.useRef<HTMLDivElement>(null);
+
+  // Pan con mouse — funciona en cualquier nivel de zoom
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (zoom <= 1) return;
+    if (e.button !== 0) return;
     setIsDragging(true);
     setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
   };
@@ -518,6 +522,37 @@ export default function App() {
   const handleMouseUp = () => {
     setIsDragging(false);
   };
+
+  // Zoom con rueda del mouse apuntando al cursor — igual que Lightroom
+  const handleWheel = React.useCallback((e: WheelEvent) => {
+    e.preventDefault();
+    const stage = imageStageRef.current;
+    if (!stage) return;
+
+    const rect = stage.getBoundingClientRect();
+    const cursorX = e.clientX - rect.left - rect.width / 2;
+    const cursorY = e.clientY - rect.top - rect.height / 2;
+
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+
+    setZoom(prevZoom => {
+      const newZoom = Math.min(Math.max(prevZoom * zoomFactor, 0.1), 10);
+      const scale = newZoom / prevZoom;
+      setPan(prevPan => ({
+        x: cursorX - scale * (cursorX - prevPan.x),
+        y: cursorY - scale * (cursorY - prevPan.y)
+      }));
+      return newZoom;
+    });
+  }, []);
+
+  // Attach wheel con passive:false para poder hacer preventDefault
+  React.useEffect(() => {
+    const stage = imageStageRef.current;
+    if (!stage) return;
+    stage.addEventListener('wheel', handleWheel, { passive: false });
+    return () => stage.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   // Performance optimization: Update CSS variables for filters
   React.useEffect(() => {
@@ -926,7 +961,24 @@ export default function App() {
     setSelectedPhotoId(photos[nextIndex].id);
   };
 
-  const downloadImage = async () => {
+  const updatePhotoTitle = async (id: string, newTitle: string) => {
+    setPhotos(prev => prev.map(p => p.id === id ? { ...p, title: newTitle } : p));
+    try {
+      await updateDoc(doc(db, "photos", id), { title: newTitle });
+    } catch (error) {
+      console.error("Error updating title:", error);
+      toast.error("Error al actualizar el nombre");
+    }
+  };
+
+  const [isExportModalOpen, setIsExportModalOpen] = React.useState(false);
+  const [exportSettings, setExportSettings] = React.useState({
+    format: 'image/jpeg' as 'image/jpeg' | 'image/png' | 'image/webp',
+    quality: 0.9,
+    scale: 1
+  });
+
+  const downloadImage = async (settings: ExportSettings) => {
     if (!selectedPhoto) return;
     
     const canvas = document.createElement('canvas');
@@ -935,50 +987,73 @@ export default function App() {
     
     toast.promise(new Promise(async (resolve, reject) => {
       img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
+        const s = selectedPhoto.settings;
+        
+        // Calculate dimensions based on scale and rotation
+        const isRotated = (s.rotation / 90) % 2 !== 0;
+        const baseWidth = isRotated ? img.height : img.width;
+        const baseHeight = isRotated ? img.width : img.height;
+        
+        canvas.width = baseWidth * settings.scale;
+        canvas.height = baseHeight * settings.scale;
+        
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           reject();
           return;
         }
+
+        ctx.scale(settings.scale, settings.scale);
+        
+        // Apply transformations (Rotation & Flips)
+        ctx.translate(baseWidth / 2, baseHeight / 2);
+        ctx.rotate((s.rotation * Math.PI) / 180);
+        ctx.scale(s.flipX ? -1 : 1, s.flipY ? -1 : 1);
+        ctx.translate(-img.width / 2, -img.height / 2);
         
         // Apply filters to canvas
-        const s = selectedPhoto.settings;
-        const exposureVal = 1 + s.exposure / 100;
-        const hueVal = s.tint;
-        const sepiaVal = s.sepia;
+        ctx.filter = getFilterString(s);
         
-        ctx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%) saturate(${s.saturation}%) sepia(${s.warmth > 0 ? s.warmth : 0}%) hue-rotate(${hueVal}deg) brightness(${exposureVal}) sepia(${sepiaVal}%) blur(${s.blur}px)`;
         ctx.drawImage(img, 0, 0);
 
         // Apply Color Balance Overlays
-        if (s.shadowTint !== "transparent") {
-          ctx.globalCompositeOperation = 'soft-light';
-          ctx.globalAlpha = 0.6;
-          ctx.fillStyle = s.shadowTint;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        if (s.midtoneTint !== "transparent") {
-          ctx.globalCompositeOperation = 'overlay';
-          ctx.globalAlpha = 0.5;
-          ctx.fillStyle = s.midtoneTint;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        if (s.highlightTint !== "transparent") {
-          ctx.globalCompositeOperation = 'color';
-          ctx.globalAlpha = 0.4;
-          ctx.fillStyle = s.highlightTint;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (s.shadowTint !== "transparent" || s.midtoneTint !== "transparent" || s.highlightTint !== "transparent") {
+          // We need to apply overlays in the same coordinate system
+          // But since we want them to cover the whole canvas, we might need to reset transform or use a specific approach
+          // For simplicity, we'll apply them over the drawn image
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset to canvas space
+          ctx.scale(settings.scale, settings.scale);
+
+          if (s.shadowTint !== "transparent") {
+            ctx.globalCompositeOperation = 'soft-light';
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = s.shadowTint;
+            ctx.fillRect(0, 0, baseWidth, baseHeight);
+          }
+          if (s.midtoneTint !== "transparent") {
+            ctx.globalCompositeOperation = 'overlay';
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = s.midtoneTint;
+            ctx.fillRect(0, 0, baseWidth, baseHeight);
+          }
+          if (s.highlightTint !== "transparent") {
+            ctx.globalCompositeOperation = 'color';
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = s.highlightTint;
+            ctx.fillRect(0, 0, baseWidth, baseHeight);
+          }
+          ctx.restore();
         }
         
         // Reset composite
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1.0;
         
+        const extension = settings.format.split('/')[1];
         const link = document.createElement('a');
-        link.download = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.png`;
-        link.href = canvas.toDataURL('image/png');
+        link.download = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.${extension}`;
+        link.href = canvas.toDataURL(settings.format, settings.quality);
         link.click();
         resolve(true);
       };
@@ -1520,13 +1595,31 @@ export default function App() {
                   Biblioteca
                 </Button>
                 <div className="h-4 w-[1px] bg-zinc-800" />
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 group">
                   <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] uppercase font-black">Revelar</Badge>
-                  <span className="text-xs font-bold text-zinc-300 uppercase tracking-widest">{selectedPhoto?.title}</span>
+                  <div className="relative flex items-center">
+                    <input 
+                      type="text"
+                      value={selectedPhoto?.title || ""}
+                      onChange={(e) => selectedPhoto && updatePhotoTitle(selectedPhoto.id, e.target.value)}
+                      className="text-xs font-bold text-zinc-300 uppercase tracking-widest bg-transparent border-none focus:ring-0 focus:outline-none hover:text-white transition-colors w-64 pr-6"
+                      placeholder="Sin título"
+                    />
+                    <Edit2 className="w-3 h-3 text-zinc-600 absolute right-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                  </div>
                 </div>
               </div>
 
               <div className="flex items-center gap-3">
+                <Button 
+                  variant={isComparing ? "default" : "outline"} 
+                  size="sm" 
+                  className={`h-8 ${isComparing ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  onClick={() => setIsComparing(!isComparing)}
+                >
+                  <Split className="w-3 h-3" />
+                  {isComparing ? 'Viendo' : 'Comparar'}
+                </Button>
                 <div className="flex items-center bg-zinc-900 rounded-lg p-1 mr-4">
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}><ZoomOut className="w-3.5 h-3.5" /></Button>
                   <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
@@ -1540,7 +1633,7 @@ export default function App() {
                   <RotateCcw className="w-3 h-3" />
                   Reset
                 </Button>
-                <Button className="h-8 bg-white text-black hover:bg-zinc-200 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && downloadImage()}>
+                <Button className="h-8 bg-white text-black hover:bg-zinc-200 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && setIsExportModalOpen(true)}>
                   <Download className="w-3 h-3" />
                   Exportar
                 </Button>
@@ -1666,7 +1759,9 @@ export default function App() {
               {/* Main Content Area */}
               <div className="flex-1 flex flex-col overflow-hidden relative bg-[#0a0a0a]">
                 {/* Image Stage */}
-                <div className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing flex items-center justify-center"
+                <div
+                  ref={imageStageRef}
+                  className={`flex-1 relative overflow-hidden flex items-center justify-center ${isDragging ? 'cursor-grabbing' : zoom > 1 ? 'cursor-grab' : 'cursor-default'}`}
                   onMouseDown={handleMouseDown}
                   onMouseMove={handleMouseMove}
                   onMouseUp={handleMouseUp}
@@ -1679,16 +1774,32 @@ export default function App() {
                       <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
                     </div>
                   ) : (
-                    <motion.div 
-                      layoutId={selectedPhoto.id}
-                      className="relative transition-transform duration-75 ease-out flex items-center justify-center"
+                    <div 
+                      className="relative flex items-center justify-center"
                       style={{ 
                         transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                         width: '90%',
-                        height: '90%'
+                        height: '90%',
+                        transition: isDragging ? 'none' : 'transform 0.2s cubic-bezier(0.2, 0, 0, 1)'
                       }}
                     >
                       <div className="relative max-w-full max-h-full flex items-center justify-center">
+                        {/* Original Image (Underneath) */}
+                        {isComparing && (
+                          <img 
+                            src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                            alt="Original"
+                            className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none absolute"
+                            style={{ 
+                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
+                              clipPath: `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`
+                            }}
+                            referrerPolicy="no-referrer"
+                            draggable={false}
+                          />
+                        )}
+
+                        {/* Edited Image */}
                         <img 
                           src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
                           alt={selectedPhoto.title}
@@ -1696,11 +1807,39 @@ export default function App() {
                           style={{ 
                             filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur))`,
                             transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
-                            clipPath: `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`
+                            clipPath: isComparing 
+                              ? `inset(0 ${100 - compareValue}% 0 0)` 
+                              : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
+                            zIndex: 1
                           }}
                           referrerPolicy="no-referrer"
                           draggable={false}
                         />
+
+                        {/* Comparison Slider Handle */}
+                        {isComparing && (
+                          <>
+                            <div 
+                              className="absolute top-0 bottom-0 w-[2px] bg-amber-500 z-20 pointer-events-none"
+                              style={{ left: `${compareValue}%` }}
+                            >
+                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-amber-500 rounded-full flex items-center justify-center shadow-lg border-2 border-zinc-950">
+                                <Split className="w-4 h-4 text-black" />
+                              </div>
+                            </div>
+                            <input 
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={compareValue}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onMouseMove={(e) => e.stopPropagation()}
+                              onMouseUp={(e) => e.stopPropagation()}
+                              onChange={(e) => setCompareValue(parseInt(e.target.value))}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-30"
+                            />
+                          </>
+                        )}
                         {/* Color Balance Overlays */}
                         <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: selectedPhoto.settings.shadowTint }} />
                         <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: selectedPhoto.settings.midtoneTint }} />
@@ -1714,7 +1853,7 @@ export default function App() {
                           }}
                         />
                       </div>
-                    </motion.div>
+                    </div>
                   )}
                 </div>
 
@@ -1737,7 +1876,10 @@ export default function App() {
                           Histograma
                           <Activity className="w-3 h-3" />
                         </h4>
-                        <Histogram settings={selectedPhoto.settings} />
+                        <Histogram 
+                        settings={selectedPhoto.settings} 
+                        imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)}
+                      />
                       </div>
 
                       {/* Main Controls */}
@@ -1761,6 +1903,12 @@ export default function App() {
     </div>
   </div>
 
+  <ExportModal 
+    isOpen={isExportModalOpen}
+    onClose={() => setIsExportModalOpen(false)}
+    onExport={downloadImage}
+    photoTitle={selectedPhoto?.title || "Imagen"}
+  />
   <Toaster position="bottom-right" theme="dark" />
 
       {/* Storage Modal */}
