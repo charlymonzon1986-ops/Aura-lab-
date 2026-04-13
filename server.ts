@@ -145,17 +145,68 @@ async function generateThumbnail(buffer: Buffer, fileName: string) {
   
   try {
     if (isRaw) {
+      console.log(`[RAW] Processing high-quality extraction for: ${fileName}`);
       // For RAW, we need a temp file for exiftool
-      const tempPath = path.join('/tmp', `raw-${Date.now()}${ext}`);
-      const thumbTempPath = path.join('/tmp', `thumb-${Date.now()}.jpg`);
+      const tempDir = path.join(__dirname, 'temp');
+      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+      
+      const tempPath = path.join(tempDir, `raw-${Date.now()}${ext}`);
+      const thumbTempPath = path.join(tempDir, `thumb-${Date.now()}.jpg`);
       fs.writeFileSync(tempPath, buffer);
       
       try {
-        await exiftool.extractPreview(tempPath, thumbTempPath);
-        const thumbBuffer = fs.readFileSync(thumbTempPath);
+        // Try to extract the largest possible preview
+        const metadata = await exiftool.read(tempPath);
+        
+        // Priority list of preview tags (from largest to smallest usually)
+        const previewTags = ['PreviewImage', 'JpgFromRaw', 'OtherImage', 'ThumbnailImage'];
+        let bestTag = '';
+        
+        for (const tag of previewTags) {
+          if ((metadata as any)[tag]) {
+            bestTag = tag;
+            break;
+          }
+        }
+
+        console.log(`[RAW] Best preview tag found: ${bestTag || 'Default'}`);
+
+        if (bestTag && bestTag !== 'ThumbnailImage') {
+          // Use extractBinaryTag to extract specific high-res tag
+          try {
+            await exiftool.extractBinaryTag(bestTag, tempPath, thumbTempPath);
+            console.log(`[RAW] Successfully extracted ${bestTag}`);
+          } catch (e) {
+            console.warn(`[RAW] Failed to extract ${bestTag}, falling back...`);
+          }
+        }
+        
+        // Fallback to standard extractPreview if custom failed or not found
+        if (!fs.existsSync(thumbTempPath)) {
+          await exiftool.extractPreview(tempPath, thumbTempPath);
+        }
+        
+        let thumbBuffer: Buffer;
+        if (fs.existsSync(thumbTempPath)) {
+          thumbBuffer = fs.readFileSync(thumbTempPath);
+          
+          // If the extracted preview is too small (e.g. < 100KB), it might be just a thumbnail
+          // In that case, we might need a more aggressive approach in a real Electron environment
+          console.log(`[RAW] Extracted preview size: ${thumbBuffer.length} bytes`);
+        } else {
+          console.log(`[RAW] extractPreview failed, trying sharp direct...`);
+          thumbBuffer = buffer;
+        }
+
         const processedThumb = await sharp(thumbBuffer)
-          .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 80 })
+          .resize(2500, 2500, { // Increased size for better quality in editor
+            fit: 'inside', 
+            withoutEnlargement: true 
+          })
+          .jpeg({ 
+            quality: 90, // Higher quality
+            chromaSubsampling: '4:4:4' 
+          })
           .toBuffer();
         
         // Cleanup temp files
@@ -164,14 +215,21 @@ async function generateThumbnail(buffer: Buffer, fileName: string) {
         
         return processedThumb;
       } catch (err) {
+        console.error("[RAW] Error in extraction chain:", err);
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         if (fs.existsSync(thumbTempPath)) fs.unlinkSync(thumbTempPath);
-        throw err;
+        
+        // Final fallback: try sharp on original buffer
+        return await sharp(buffer)
+          .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 70 })
+          .toBuffer()
+          .catch(() => null);
       }
     } else {
       return await sharp(buffer)
-        .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 80 })
+        .resize(2000, 2000, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 85 })
         .toBuffer();
     }
   } catch (err) {

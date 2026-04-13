@@ -29,33 +29,33 @@ export function getFilterString(settings: LightingSettings): string {
   const effectiveBrightness = brightness + (exposure * 20) + whiteAdj + blackAdj;
   
   // Dehaze simulation: Increase contrast and decrease brightness slightly
-  const dehazeContrast = dehaze * 0.5;
-  const dehazeBrightness = dehaze * -0.2;
+  const dehazeContrast = dehaze * 0.8;
+  const dehazeBrightness = dehaze * -0.3;
   
   // Highlights and Shadows simulation
-  const highAdj = (highlights - 100) / 4;
-  const shadAdj = (shadows - 100) / 4;
+  const highAdj = (highlights - 100) / 3;
+  const shadAdj = (shadows - 100) / 3;
   
-  // Texture and Clarity contribute to contrast
-  const textureAdj = texture / 4;
-  const clarityAdj = clarity / 2;
+  // Texture and Clarity contribute to contrast and sharpness perception
+  const textureAdj = texture / 2;
+  const clarityAdj = clarity / 1.5;
   
   const effectiveContrast = contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
   const finalBrightness = effectiveBrightness + dehazeBrightness;
   
   // Warmth is simulated with sepia and hue-rotate
-  const sepia = warmth > 0 ? warmth / 200 : 0;
-  const warmthHue = warmth < 0 ? warmth / 2 : 0; // Negative warmth = cooler (blue)
+  const sepia = warmth > 0 ? warmth / 150 : 0;
+  const warmthHue = warmth < 0 ? warmth / 1.5 : 0; // Negative warmth = cooler (blue)
   
   // Tint is simulated with hue-rotate
-  const tintHue = tint / 2;
+  const tintHue = tint / 1.5;
   
   // Vibrance is a "smarter" saturation
-  const dehazeSaturate = dehaze * 0.2;
-  const effectiveSaturation = (saturation * (vibrance / 100)) + dehazeSaturate;
+  const dehazeSaturate = dehaze * 0.3;
+  const effectiveSaturation = (saturation * (1 + (vibrance - 100) / 100)) + dehazeSaturate;
   
   // Noise Reduction is a subtle blur
-  const nrBlur = noiseReduction / 50;
+  const nrBlur = noiseReduction / 40;
   
   return `
     brightness(${finalBrightness}%) 

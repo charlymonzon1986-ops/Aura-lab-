@@ -5,7 +5,8 @@ import { ColorBalance } from "./ColorBalance";
 import { 
   Sun, Contrast, Droplets, Zap, Thermometer, Lock, Sparkles,
   Eye, Layers, CircleDot, Palette, Wind, RotateCw, FlipHorizontal,
-  FlipVertical, Scissors, CloudFog, Waves, Box, Focus, Ghost
+  FlipVertical, Scissors, CloudFog, Waves, Box, Focus, Ghost,
+  Copy, ClipboardPaste
 } from "lucide-react";
 import { LightingSettings, PlanType } from "@/src/types";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,9 @@ interface LightingControlsProps {
   userPlan: PlanType;
   onSmartEnhance: () => void;
   isAutoEnhancing: boolean;
+  onCopySettings: () => void;
+  onPasteSettings: () => void;
+  hasCopiedSettings: boolean;
 }
 
 // ── ControlItem fuera del componente padre ────────────────────────────────────
@@ -83,7 +87,8 @@ const ControlItem = React.memo(function ControlItem({
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export const LightingControls = React.memo(function LightingControls({ 
-  settings, onChange, userPlan, onSmartEnhance, isAutoEnhancing
+  settings, onChange, userPlan, onSmartEnhance, isAutoEnhancing,
+  onCopySettings, onPasteSettings, hasCopiedSettings
 }: LightingControlsProps) {
 
   const [localSettings, setLocalSettings] = React.useState(settings);
@@ -159,28 +164,52 @@ export const LightingControls = React.memo(function LightingControls({
     <div className="space-y-10 pb-20">
 
       {/* AI Smart Enhance */}
-      <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 to-transparent border border-amber-500/20 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-amber-500" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-white">Smart Enhance</span>
+      <div className="space-y-4">
+        <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 to-transparent border border-amber-500/20 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-500" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-white">Smart Enhance</span>
+            </div>
+            <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[8px]">FREE API</Badge>
           </div>
-          <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[8px]">FREE API</Badge>
+          <p className="text-[10px] text-zinc-500 leading-relaxed">
+            Optimiza automáticamente la iluminación y el color usando Gemini 3 Flash.
+          </p>
+          <Button
+            className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold text-[10px] uppercase tracking-wider h-9 rounded-xl shadow-lg shadow-amber-500/20"
+            onClick={onSmartEnhance}
+            disabled={isAutoEnhancing}
+          >
+            {isAutoEnhancing ? (
+              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
+                <RotateCw className="w-3.5 h-3.5" />
+              </motion.div>
+            ) : "Aplicar Mejora IA"}
+          </Button>
         </div>
-        <p className="text-[10px] text-zinc-500 leading-relaxed">
-          Optimiza automáticamente la iluminación y el color usando Gemini 3 Flash.
-        </p>
-        <Button
-          className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold text-[10px] uppercase tracking-wider h-9 rounded-xl shadow-lg shadow-amber-500/20"
-          onClick={onSmartEnhance}
-          disabled={isAutoEnhancing}
-        >
-          {isAutoEnhancing ? (
-            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
-              <RotateCw className="w-3.5 h-3.5" />
-            </motion.div>
-          ) : "Aplicar Mejora IA"}
-        </Button>
+
+        {/* Copy/Paste Actions */}
+        <div className="grid grid-cols-2 gap-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            className="h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest text-zinc-400 hover:text-white hover:border-zinc-700"
+            onClick={onCopySettings}
+          >
+            <Copy className="w-3.5 h-3.5 mr-2" />
+            Copiar
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            className={`h-9 border-zinc-800 text-[10px] uppercase font-bold tracking-widest ${hasCopiedSettings ? 'text-amber-500 border-amber-500/20 bg-amber-500/5' : 'text-zinc-400 opacity-50'}`}
+            onClick={onPasteSettings}
+          >
+            <ClipboardPaste className="w-3.5 h-3.5 mr-2" />
+            Pegar
+          </Button>
+        </div>
       </div>
 
       {/* Geometría y Recorte */}

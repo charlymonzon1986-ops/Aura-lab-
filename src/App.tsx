@@ -44,7 +44,8 @@ import {
   CreditCard,
   CheckCircle2,
   RotateCw,
-  Trash2 as TrashIcon
+  Trash2 as TrashIcon,
+  ClipboardPaste
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -85,7 +86,8 @@ import {
   serverTimestamp,
   orderBy,
   limit,
-  increment
+  increment,
+  writeBatch
 } from "firebase/firestore";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { Progress } from "@/components/ui/progress";
@@ -172,6 +174,8 @@ export default function App() {
   const [newFolderName, setNewFolderName] = React.useState("");
   const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
+  const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
+  const [copiedSettings, setCopiedSettings] = React.useState<LightingSettings | null>(null);
   
   // Reset zoom when photo changes
   React.useEffect(() => {
@@ -630,15 +634,15 @@ export default function App() {
     const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
     
     // Dehaze simulation
-    const dehazeContrast = s.dehaze * 0.5;
-    const dehazeBrightness = s.dehaze * -0.2;
+    const dehazeContrast = s.dehaze * 0.8;
+    const dehazeBrightness = s.dehaze * -0.3;
     
-    const highAdj = (s.highlights - 100) / 4;
-    const shadAdj = (s.shadows - 100) / 4;
+    const highAdj = (s.highlights - 100) / 3;
+    const shadAdj = (s.shadows - 100) / 3;
     
     // Texture and Clarity
-    const textureAdj = s.texture / 4;
-    const clarityAdj = s.clarity / 2;
+    const textureAdj = s.texture / 2;
+    const clarityAdj = s.clarity / 1.5;
     
     const effectiveContrast = s.contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
     const finalBrightness = effectiveBrightness + dehazeBrightness;
@@ -647,14 +651,14 @@ export default function App() {
     root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
     
     // Vibrance and Dehaze saturate
-    const dehazeSaturate = s.dehaze * 0.2;
-    const effectiveSaturation = (s.saturation * (s.vibrance / 100)) + dehazeSaturate;
+    const dehazeSaturate = s.dehaze * 0.3;
+    const effectiveSaturation = (s.saturation * (1 + (s.vibrance - 100) / 100)) + dehazeSaturate;
     root.style.setProperty('--img-saturate', `${effectiveSaturation}%`);
     
     // Warmth logic: positive = sepia, negative = blue hue-rotate
-    const sepiaVal = s.warmth > 0 ? s.warmth / 2 : 0;
-    const warmthHue = s.warmth < 0 ? s.warmth / 2 : 0;
-    const tintHue = s.tint / 2;
+    const sepiaVal = s.warmth > 0 ? s.warmth / 1.5 : 0;
+    const warmthHue = s.warmth < 0 ? s.warmth / 1.5 : 0;
+    const tintHue = s.tint / 1.5;
     
     root.style.setProperty('--img-sepia', `${sepiaVal}%`);
     root.style.setProperty('--img-hue', `${warmthHue + tintHue}deg`);
@@ -666,7 +670,7 @@ export default function App() {
     root.style.setProperty('--img-sepia-val', `${s.sepia}%`);
     
     // Noise Reduction + Blur
-    const nrBlur = s.noiseReduction / 50;
+    const nrBlur = s.noiseReduction / 40;
     root.style.setProperty('--img-blur', `${s.blur + nrBlur}px`);
     
     // Sharpening (handled via SVG filter)
@@ -938,27 +942,41 @@ export default function App() {
     
     try {
       toast.loading("Analizando imagen con IA...", { id: "ai-enhance" });
+      console.log("Starting Smart Enhance for photo:", id);
       
       // Get the image data
       let blob: Blob;
-      if (photo.storagePath) {
+      const isRaw = /\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url);
+      const targetUrl = isRaw && photo.thumbnailUrl ? photo.thumbnailUrl : photo.url;
+      
+      if (photo.storagePath && !isRaw) {
+        console.log("Fetching from storage:", photo.storagePath);
         const storageRef = ref(storage, photo.storagePath);
         blob = await getBlob(storageRef);
       } else {
-        const imageUrl = fixImageUrl(photo.url);
+        console.log(`Fetching from ${isRaw ? 'Thumbnail (RAW detected)' : 'URL'}:`, targetUrl);
+        const imageUrl = fixImageUrl(targetUrl);
         const response = await fetch(imageUrl);
+        if (!response.ok) throw new Error(`Error al descargar la imagen: ${response.statusText}`);
         blob = await response.blob();
       }
       
+      console.log("Image blob obtained:", blob.type, blob.size);
+
       // Convert to base64
       const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
-        reader.onloadend = () => resolve(reader.result as string);
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          if (!base64) reject(new Error("No se pudo convertir la imagen a base64"));
+          resolve(base64);
+        };
+        reader.onerror = () => reject(new Error("Error al leer el archivo de imagen"));
         reader.readAsDataURL(blob);
       });
-      const base64Data = await base64Promise;
-      const base64Content = base64Data.split(',')[1];
+      const base64Content = await base64Promise;
 
+      console.log("Sending request to Gemini for Smart Enhance...");
       const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
       const result = await model.generateContent({
         contents: [
@@ -999,7 +1017,9 @@ export default function App() {
         }
       });
 
-      const aiResponse = JSON.parse(result.response.text());
+      const responseText = result.response.text();
+      console.log("Gemini response received for Smart Enhance:", responseText);
+      const aiResponse = JSON.parse(responseText);
       
       // Normalize AI response to match our internal ranges
       const normalizedAiResponse = { ...aiResponse };
@@ -1038,6 +1058,64 @@ export default function App() {
     }
   };
 
+  const copySettings = () => {
+    const photo = photos.find(p => p.id === selectedPhotoId);
+    if (photo) {
+      setCopiedSettings({ ...photo.settings });
+      toast.success("Ajustes copiados");
+    }
+  };
+
+  const pasteSettings = async () => {
+    if (!copiedSettings) {
+      toast.error("No hay ajustes copiados");
+      return;
+    }
+
+    const targets = selectedPhotoIds.length > 0 ? selectedPhotoIds : (selectedPhotoId ? [selectedPhotoId] : []);
+    
+    if (targets.length === 0) {
+      toast.error("Selecciona al menos una foto para pegar");
+      return;
+    }
+
+    const toastId = toast.loading(`Pegando ajustes en ${targets.length} foto(s)...`);
+
+    try {
+      const batch = writeBatch(db);
+      targets.forEach(id => {
+        const photoRef = doc(db, "photos", id);
+        batch.update(photoRef, { settings: copiedSettings });
+      });
+      await batch.commit();
+      
+      // Update local state
+      setPhotos(prev => prev.map(p => targets.includes(p.id) ? { ...p, settings: copiedSettings } : p));
+      
+      toast.success("Ajustes pegados correctamente", { id: toastId });
+    } catch (error) {
+      console.error("Error pasting settings:", error);
+      toast.error("Error al pegar los ajustes", { id: toastId });
+    }
+  };
+
+  const selectAllPhotos = () => {
+    if (photos.length === 0) return;
+    const allIds = photos.map(p => p.id);
+    setSelectedPhotoIds(allIds);
+    toast.success(`${allIds.length} fotos seleccionadas`);
+  };
+
+  const clearSelection = () => {
+    setSelectedPhotoIds([]);
+  };
+
+  const togglePhotoSelection = (id: string) => {
+    setSelectedPhotoIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
   const analyzePhotoWithIA = async (id: string) => {
     const photo = photos.find(p => p.id === id);
     if (!photo) return;
@@ -1046,12 +1124,25 @@ export default function App() {
     const toastId = toast.loading("Analizando imagen con Gemini...");
 
     try {
-      const response = await fetch(fixImageUrl(photo.url));
-      const blob = await response.blob();
-      const reader = new FileReader();
+      const isRaw = /\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url);
+      const targetUrl = isRaw && photo.thumbnailUrl ? photo.thumbnailUrl : photo.url;
       
-      const imageData = await new Promise<string>((resolve) => {
-        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      console.log(`Fetching image for AI analysis (${isRaw ? 'RAW Proxy' : 'Original'}):`, targetUrl);
+      const imageUrl = fixImageUrl(targetUrl);
+      const response = await fetch(imageUrl);
+      if (!response.ok) throw new Error(`Error al descargar la imagen: ${response.statusText}`);
+      
+      const blob = await response.blob();
+      console.log("Image blob obtained:", blob.type, blob.size);
+      
+      const reader = new FileReader();
+      const imageData = await new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          if (!base64) reject(new Error("No se pudo convertir la imagen a base64"));
+          resolve(base64);
+        };
+        reader.onerror = () => reject(new Error("Error al leer el archivo de imagen"));
         reader.readAsDataURL(blob);
       });
 
@@ -1062,8 +1153,9 @@ export default function App() {
       4. "presetSuggestion": El nombre de uno de estos presets que mejor le iría: "Cine Noir", "Urbano Brutalista", "Boda Elegante", "Amanecer Cálido", "Golden Hour Pro", "Retrato Suave".
       
       IMPORTANTE: Toda la respuesta de texto debe ser en ESPAÑOL.
-      Responde SOLO con el JSON.`;
+      Responde ÚNICAMENTE con el JSON.`;
 
+      console.log("Sending request to Gemini...");
       const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
       const result = await model.generateContent({
         contents: [
@@ -1071,7 +1163,7 @@ export default function App() {
             role: "user",
             parts: [
               { text: prompt },
-              { inlineData: { data: imageData, mimeType: blob.type } }
+              { inlineData: { data: imageData, mimeType: blob.type || "image/jpeg" } }
             ]
           }
         ],
@@ -1080,7 +1172,9 @@ export default function App() {
         }
       });
 
-      const analysis = JSON.parse(result.response.text());
+      const responseText = result.response.text();
+      console.log("Gemini response received:", responseText);
+      const analysis = JSON.parse(responseText);
 
       setPhotos(prev => prev.map(p => p.id === id ? { 
         ...p, 
@@ -1090,18 +1184,18 @@ export default function App() {
       } : p));
 
       await updateDoc(doc(db, "photos", id), { 
-        title: analysis.title,
-        description: analysis.description,
-        tags: analysis.tags
+        title: analysis.title || photo.title,
+        description: analysis.description || photo.description || "",
+        tags: analysis.tags || photo.tags || []
       });
 
       toast.success("Análisis completado", {
         description: `Sugerencia: ${analysis.presetSuggestion}`,
         id: toastId
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("AI Analysis error:", error);
-      toast.error("Error al analizar la imagen", { id: toastId });
+      toast.error(`Error en el análisis: ${error.message || "Error desconocido"}`, { id: toastId });
     } finally {
       setIsAnalyzing(false);
     }
@@ -1231,7 +1325,7 @@ export default function App() {
           <feConvolveMatrix 
             order="3" 
             preserveAlpha="true" 
-            kernelMatrix="0 -1 0 -1 5 -1 0 -1 0" 
+            kernelMatrix={selectedPhoto ? `0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} ${1 + 4 * (selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0` : "0 -1 0 -1 5 -1 0 -1 0"} 
             divisor="1"
           />
         </filter>
@@ -1652,10 +1746,88 @@ export default function App() {
                         <FolderPlus className="w-4 h-4 mr-2" />
                         Nueva Carpeta
                       </Button>
+
+                      <div className="flex items-center gap-2 ml-auto">
+                        {selectedPhotoIds.length > 0 && (
+                          <>
+                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mr-2">
+                              {selectedPhotoIds.length} seleccionadas
+                            </span>
+                            <Button 
+                              variant="ghost" 
+                              size="sm" 
+                              className="text-[10px] uppercase font-bold text-zinc-500 hover:text-white"
+                              onClick={clearSelection}
+                            >
+                              Deseleccionar
+                            </Button>
+                          </>
+                        )}
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="rounded-full px-4 border-zinc-800 text-zinc-400 hover:text-white"
+                          onClick={selectAllPhotos}
+                        >
+                          Seleccionar Todo
+                        </Button>
+                      </div>
                     </div>
 
                     {/* Gallery Grid */}
-                    <div className="space-y-6">
+                    <div className="space-y-6 relative">
+                      {/* Floating Multi-select Actions */}
+                      <AnimatePresence>
+                        {selectedPhotoIds.length > 0 && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 50 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 50 }}
+                            className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 rounded-2xl p-4 shadow-2xl flex items-center gap-6 min-w-[400px]"
+                          >
+                            <div className="flex items-center gap-3 pr-6 border-r border-zinc-800">
+                              <div className="w-8 h-8 rounded-full bg-amber-500 flex items-center justify-center text-black font-bold text-xs">
+                                {selectedPhotoIds.length}
+                              </div>
+                              <span className="text-xs font-bold text-white uppercase tracking-widest">Fotos Seleccionadas</span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className={`h-9 text-[10px] uppercase font-bold tracking-widest ${copiedSettings ? 'text-amber-500 hover:bg-amber-500/10' : 'text-zinc-600 cursor-not-allowed'}`}
+                                onClick={pasteSettings}
+                                disabled={!copiedSettings}
+                              >
+                                <ClipboardPaste className="w-3.5 h-3.5 mr-2" />
+                                Pegar Ajustes
+                              </Button>
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-9 text-[10px] uppercase font-bold tracking-widest text-zinc-400 hover:text-white"
+                                onClick={() => {
+                                  // Logic to delete multiple if needed
+                                  toast.error("Borrado múltiple no implementado aún");
+                                }}
+                              >
+                                <Trash2 className="w-3.5 h-3.5 mr-2" />
+                                Borrar
+                              </Button>
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-9 text-[10px] uppercase font-bold tracking-widest text-zinc-400 hover:text-white"
+                                onClick={clearSelection}
+                              >
+                                Cancelar
+                              </Button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
                       {filteredPhotos.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                           {filteredPhotos.map((photo) => (
@@ -1664,9 +1836,19 @@ export default function App() {
                               layoutId={photo.id}
                               initial={{ opacity: 0, y: 20 }}
                               animate={{ opacity: 1, y: 0 }}
-                              className="group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-amber-500/50 transition-all shadow-2xl"
+                              className={`group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border transition-all shadow-2xl ${selectedPhotoIds.includes(photo.id) ? 'border-amber-500 ring-1 ring-amber-500' : 'border-zinc-800 hover:border-amber-500/50'}`}
                             >
                               <div className="w-full h-full relative">
+                                {/* Selection Checkbox */}
+                                <div 
+                                  className={`absolute top-3 left-3 z-20 w-5 h-5 rounded-full border flex items-center justify-center cursor-pointer transition-all ${selectedPhotoIds.includes(photo.id) ? 'bg-amber-500 border-amber-500' : 'bg-black/40 border-white/20 hover:border-white/50'}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    togglePhotoSelection(photo.id);
+                                  }}
+                                >
+                                  {selectedPhotoIds.includes(photo.id) && <CheckCircle2 className="w-3.5 h-3.5 text-black" />}
+                                </div>
                                 {(photo.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url) ? (
                                   <img 
                                     src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
@@ -2109,6 +2291,9 @@ export default function App() {
                           userPlan={userProfile?.plan || 'free'}
                           onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
                           isAutoEnhancing={isAutoEnhancing}
+                          onCopySettings={copySettings}
+                          onPasteSettings={pasteSettings}
+                          hasCopiedSettings={!!copiedSettings}
                         />
                       </div>
                     </div>
