@@ -41,53 +41,55 @@ export function getFilterString(settings: LightingSettings): string {
     lutFilter = `sepia(${20 * intensity}%) hue-rotate(${intensity * 5}deg) saturate(${100 + 15 * intensity}%)`;
   }
   
-  // Combine exposure and whites/blacks into brightness/contrast
-  const whiteAdj = (whites - 100) / 2;
-  const blackAdj = (blacks - 100) / 2;
-  const effectiveBrightness = brightness + (exposure * 20) + whiteAdj + blackAdj;
+  // 1. Exposure: Multiplicative brightness
+  const exposureAdj = Math.pow(2, exposure);
   
-  // Dehaze simulation: Increase contrast and decrease brightness slightly
-  const dehazeContrast = dehaze * 0.8;
-  const dehazeBrightness = dehaze * -0.3;
+  // 2. Brightness: Additive brightness
+  const brightnessAdj = brightness / 100;
   
-  // Highlights and Shadows simulation
-  const highAdj = (highlights - 100) / 3;
-  const shadAdj = (shadows - 100) / 3;
+  // 3. Contrast: Slope around 0.5
+  const contrastAdj = contrast / 100;
   
-  // Texture and Clarity contribute to contrast and sharpness perception
-  const textureAdj = texture / 2;
+  // 4. Saturation & Vibrance
+  const saturationAdj = (saturation / 100) * (1 + (vibrance - 100) / 200);
+  
+  // 5. Highlights & Shadows (Simulated with brightness/contrast tweaks)
+  const highAdj = (highlights - 100) / 5;
+  const shadAdj = (shadows - 100) / 5;
+  
+  // 6. Whites & Blacks
+  const whiteAdj = (whites - 100) / 4;
+  const blackAdj = (blacks - 100) / 4;
+
+  // 7. Clarity & Texture
   const clarityAdj = clarity / 1.5;
-  
-  const effectiveContrast = contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
-  const finalBrightness = effectiveBrightness + dehazeBrightness;
-  
-  // Warmth is simulated with sepia and hue-rotate
+  const textureAdj = texture / 2;
+
+  // 8. Dehaze
+  const dehazeAdj = dehaze / 1.5;
+
+  // Final combined values for CSS filters
+  const finalBrightness = (100 * exposureAdj * brightnessAdj) + highAdj + shadAdj + whiteAdj + blackAdj - (dehaze / 4);
+  const finalContrast = contrast + clarityAdj + textureAdj + (dehaze * 0.8) + (highAdj / 2) - (shadAdj / 2);
+  const finalSaturation = saturationAdj * 100 + (dehaze / 2);
+
+  // Warmth & Tint
   const sepia = warmth > 0 ? warmth / 150 : 0;
-  const warmthHue = warmth < 0 ? warmth / 1.5 : 0; // Negative warmth = cooler (blue)
-  
-  // Tint is simulated with hue-rotate
-  const tintHue = tint / 1.5;
-  
-  // Vibrance is a "smarter" saturation
-  const dehazeSaturate = dehaze * 0.3;
-  const effectiveSaturation = (saturation * (1 + (vibrance - 100) / 100)) + dehazeSaturate;
-  
-  // Noise Reduction is a subtle blur
+  const warmthHue = warmth < 0 ? warmth / 1.5 : warmth / 5;
+  const tintHue = tint / 1.2;
+
+  // Noise Reduction
   const nrBlur = noiseReduction / 40;
-  
-  // Vignette and Grain are handled via overlays/SVG filters in the UI
-  // but we include them here for the canvas export if supported
-  
+
   return `
     brightness(${finalBrightness}%) 
-    contrast(${effectiveContrast}%) 
-    saturate(${effectiveSaturation}%) 
+    contrast(${finalContrast}%) 
+    saturate(${finalSaturation}%) 
     sepia(${sepia + (sepiaVal / 100)}) 
     hue-rotate(${warmthHue + tintHue}deg)
     blur(${blurVal + nrBlur}px)
     ${lutFilter}
-    ${(sharpening > 0 || focus > 0) ? 'url(#sharpen-filter)' : ''}
-    ${(settings.grain > 0) ? 'url(#grain-filter)' : ''}
+    ${(sharpening > 0 || focus > 0) ? 'url(#f-sharpen)' : ''}
   `.replace(/\s+/g, ' ').trim();
 }
 

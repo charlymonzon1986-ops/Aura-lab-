@@ -95,41 +95,24 @@ export const LightingControls = React.memo(function LightingControls({
 
   const [localSettings, setLocalSettings] = React.useState(settings);
   const localRef = React.useRef(localSettings);
-  const rafRef = React.useRef<number | null>(null);
+  const prevSettingsRef = React.useRef(settings);
 
-  // Sync cuando cambia preset o foto seleccionada
+  // Sync cuando cambia la foto o se confirma un cambio (commit)
   React.useEffect(() => {
-    setLocalSettings(settings);
-    localRef.current = settings;
+    if (settings !== prevSettingsRef.current) {
+      setLocalSettings(settings);
+      localRef.current = settings;
+      prevSettingsRef.current = settings;
+    }
   }, [settings]);
-
-  // Escribe CSS variables — solo se llama via RAF, nunca dispara re-render
-  const updateCSS = React.useCallback((s: LightingSettings) => {
-    const root = document.documentElement;
-    
-    // Consolidate all filters into one variable for robustness
-    root.style.setProperty('--img-filter', getFilterString(s));
-    
-    root.style.setProperty('--img-vignette-opacity', `${s.vignette / 100}`);
-    root.style.setProperty('--img-grain-opacity', `${s.grain / 200}`);
-    root.style.setProperty('--img-rotate', `${s.rotation}deg`);
-    root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
-    root.style.setProperty('--img-flip-y', s.flipY ? '-1' : '1');
-    root.style.setProperty('--img-crop-top', `${s.cropTop}%`);
-    root.style.setProperty('--img-crop-bottom', `${s.cropBottom}%`);
-    root.style.setProperty('--img-crop-left', `${s.cropLeft}%`);
-    root.style.setProperty('--img-crop-right', `${s.cropRight}%`);
-  }, []);
 
   // Solo actualiza preview — no dispara re-render del padre
   const handleSliderChange = React.useCallback((key: keyof LightingSettings, val: number) => {
     const next = { ...localRef.current, [key]: val };
     localRef.current = next;
     setLocalSettings(next); // re-render solo de LightingControls, no de App
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => updateCSS(next));
     if (onPreviewChange) onPreviewChange(next);
-  }, [updateCSS, onPreviewChange]);
+  }, [onPreviewChange]);
 
   // Guarda en estado global solo al soltar — esto sí dispara App
   const handleSliderCommit = React.useCallback((key: keyof LightingSettings, val: number) => {

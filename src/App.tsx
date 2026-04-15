@@ -66,6 +66,7 @@ import axios from "axios";
 import { LightingControls } from "@/src/components/LightingControls";
 import { Histogram } from "@/src/components/Histogram";
 import { Filmstrip } from "@/src/components/Filmstrip";
+import { PhotoCanvas, renderImageToCanvas } from "@/src/components/PhotoCanvas";
 import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
 import { CropOverlay } from "@/src/components/CropOverlay";
 import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
@@ -214,7 +215,7 @@ export default function App() {
   const [compareValue, setCompareValue] = React.useState(50);
   const [isCropping, setIsCropping] = React.useState(false);
   const [isAnalyzing, setIsAnalyzing] = React.useState(false);
-  const imageRef = React.useRef<HTMLImageElement>(null);
+  const imageRef = React.useRef<HTMLCanvasElement>(null);
   const [isPressing, setIsPressing] = React.useState(false);
   const [newPhotoUrl, setNewPhotoUrl] = React.useState("");
   const galleryRef = React.useRef<HTMLDivElement>(null);
@@ -662,64 +663,6 @@ export default function App() {
     return () => stage.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
 
-  // Performance optimization: Update CSS variables for filters
-  React.useEffect(() => {
-    if (!selectedPhoto) return;
-    const s = selectedPhoto.settings;
-    const root = document.documentElement;
-    
-    // Advanced math for accurate rendering (matching getFilterString)
-    const whiteAdj = (s.whites - 100) / 2;
-    const blackAdj = (s.blacks - 100) / 2;
-    const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
-    
-    // Dehaze simulation
-    const dehazeContrast = s.dehaze * 0.8;
-    const dehazeBrightness = s.dehaze * -0.3;
-    
-    const highAdj = (s.highlights - 100) / 3;
-    const shadAdj = (s.shadows - 100) / 3;
-    
-    // Texture and Clarity
-    const textureAdj = s.texture / 2;
-    const clarityAdj = s.clarity / 1.5;
-    
-    const effectiveContrast = s.contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
-    const finalBrightness = effectiveBrightness + dehazeBrightness;
-
-    root.style.setProperty('--img-brightness', `${finalBrightness}%`);
-    root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
-    
-    // Vibrance and Dehaze saturate
-    const dehazeSaturate = s.dehaze * 0.3;
-    const effectiveSaturation = (s.saturation * (1 + (s.vibrance - 100) / 100)) + dehazeSaturate;
-    root.style.setProperty('--img-saturate', `${effectiveSaturation}%`);
-    
-    // Warmth logic: positive = sepia, negative = blue hue-rotate
-    const sepiaVal = s.warmth > 0 ? s.warmth / 1.5 : 0;
-    const warmthHue = s.warmth < 0 ? s.warmth / 1.5 : 0;
-    const tintHue = s.tint / 1.5;
-    
-    root.style.setProperty('--img-sepia', `${sepiaVal}%`);
-    root.style.setProperty('--img-hue', `${warmthHue + tintHue}deg`);
-    root.style.setProperty('--img-exposure', `1`); // Exposure is now baked into brightness
-    root.style.setProperty('--img-vignette', `${s.vignette / 100}`);
-    root.style.setProperty('--img-rotate', `${s.rotation}deg`);
-    root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
-    root.style.setProperty('--img-flip-y', s.flipY ? '-1' : '1');
-    root.style.setProperty('--img-sepia-val', `${s.sepia}%`);
-    
-    // Noise Reduction + Blur
-    const nrBlur = s.noiseReduction / 40;
-    root.style.setProperty('--img-blur', `${s.blur + nrBlur}px`);
-    
-    // Consolidate all filters into one variable for robustness
-    root.style.setProperty('--img-filter', getFilterString(s));
-    
-    root.style.setProperty('--img-vignette-opacity', `${s.vignette / 100}`);
-    root.style.setProperty('--img-grain-opacity', `${s.grain / 200}`);
-    root.style.setProperty('--img-rotate', `${s.rotation}deg`);
-  }, [selectedPhoto?.settings]);
   const deletePhoto = async (id: string) => {
     if (!user || !userProfile) {
       console.warn("Delete aborted: No user or profile");
@@ -1060,23 +1003,16 @@ export default function App() {
       const aiResponse = JSON.parse(responseText);
       
       // Normalize AI response to match our internal ranges
-      const normalizedAiResponse = { ...aiResponse };
-      
-      if (normalizedAiResponse.warmth !== undefined) {
-        normalizedAiResponse.warmth = (normalizedAiResponse.warmth - 100);
-      }
-      if (normalizedAiResponse.tint !== undefined) {
-        normalizedAiResponse.tint = (normalizedAiResponse.tint - 100);
-      }
-      // Exposure is already in -1 to 1 range from AI, our app uses -5 to 5, so it's safe
-
-      // Merge with default settings to ensure all fields exist
+      // The AI prompt now asks for -5 to 5 for warmth/tint, so no need to subtract 100
       const enhancedSettings: LightingSettings = {
         ...DEFAULT_SETTINGS,
-        ...normalizedAiResponse
+        ...aiResponse
       };
       
       updatePhotoSettings(id, enhancedSettings);
+      if (id === selectedPhotoId) {
+        setPreviewSettings(enhancedSettings);
+      }
       toast.success("Iluminación optimizada por IA", { id: "ai-enhance" });
     } catch (error) {
       console.error("AI Enhance error:", error);
@@ -1084,10 +1020,10 @@ export default function App() {
       
       const fallbackSettings: LightingSettings = {
         ...DEFAULT_SETTINGS,
-        brightness: 115,
-        contrast: 110,
-        saturation: 105,
-        exposure: 10,
+        brightness: 105,
+        contrast: 105,
+        saturation: 102,
+        exposure: 0.2,
         clarity: 15
       };
       updatePhotoSettings(id, fallbackSettings);
@@ -1307,7 +1243,7 @@ export default function App() {
     img.crossOrigin = "anonymous";
     
     toast.promise(new Promise(async (resolve, reject) => {
-      img.onload = () => {
+      img.onload = async () => {
         const s = selectedPhoto.settings;
         
         // Calculate dimensions based on scale and rotation
@@ -1315,61 +1251,13 @@ export default function App() {
         const baseWidth = isRotated ? img.height : img.width;
         const baseHeight = isRotated ? img.width : img.height;
         
-        canvas.width = baseWidth * settings.scale;
-        canvas.height = baseHeight * settings.scale;
-        
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject();
-          return;
-        }
+        const exportWidth = baseWidth * settings.scale;
+        const exportHeight = baseHeight * settings.scale;
 
-        ctx.scale(settings.scale, settings.scale);
-        
-        // Apply transformations (Rotation & Flips)
-        ctx.translate(baseWidth / 2, baseHeight / 2);
-        ctx.rotate((s.rotation * Math.PI) / 180);
-        ctx.scale(s.flipX ? -1 : 1, s.flipY ? -1 : 1);
-        ctx.translate(-img.width / 2, -img.height / 2);
-        
-        // Apply filters to canvas
-        ctx.filter = getFilterString(s);
-        
-        ctx.drawImage(img, 0, 0);
-
-        // Apply Color Balance Overlays
-        if (s.shadowTint !== "transparent" || s.midtoneTint !== "transparent" || s.highlightTint !== "transparent") {
-          // We need to apply overlays in the same coordinate system
-          // But since we want them to cover the whole canvas, we might need to reset transform or use a specific approach
-          // For simplicity, we'll apply them over the drawn image
-          ctx.save();
-          ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset to canvas space
-          ctx.scale(settings.scale, settings.scale);
-
-          if (s.shadowTint !== "transparent") {
-            ctx.globalCompositeOperation = 'soft-light';
-            ctx.globalAlpha = 0.6;
-            ctx.fillStyle = s.shadowTint;
-            ctx.fillRect(0, 0, baseWidth, baseHeight);
-          }
-          if (s.midtoneTint !== "transparent") {
-            ctx.globalCompositeOperation = 'overlay';
-            ctx.globalAlpha = 0.5;
-            ctx.fillStyle = s.midtoneTint;
-            ctx.fillRect(0, 0, baseWidth, baseHeight);
-          }
-          if (s.highlightTint !== "transparent") {
-            ctx.globalCompositeOperation = 'color';
-            ctx.globalAlpha = 0.4;
-            ctx.fillStyle = s.highlightTint;
-            ctx.fillRect(0, 0, baseWidth, baseHeight);
-          }
-          ctx.restore();
-        }
-        
-        // Reset composite
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1.0;
+        await renderImageToCanvas(canvas, img, s, {
+          width: exportWidth,
+          height: exportHeight
+        });
         
         const extension = settings.format.split('/')[1];
         const link = document.createElement('a');
@@ -1390,16 +1278,46 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30 flex overflow-hidden relative">
       {/* Sidebar Backdrop (Mobile) */}
-      {/* SVG Filters for Advanced Processing */}
+      {/* Master SVG Filter for Real-time Image Processing */}
       <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}>
-        <filter id="sharpen-filter">
+        <filter id="aura-master-filter" colorInterpolationFilters="sRGB">
+          {/* 1. Exposure & Brightness */}
+          <feComponentTransfer id="f-exposure-brightness">
+            <feFuncR type="linear" slope="1" intercept="0" />
+            <feFuncG type="linear" slope="1" intercept="0" />
+            <feFuncB type="linear" slope="1" intercept="0" />
+          </feComponentTransfer>
+
+          {/* 2. Contrast */}
+          <feComponentTransfer id="f-contrast">
+            <feFuncR type="linear" slope="1" intercept="0" />
+            <feFuncG type="linear" slope="1" intercept="0" />
+            <feFuncB type="linear" slope="1" intercept="0" />
+          </feComponentTransfer>
+
+          {/* 3. Tonal Adjustments (Highlights/Shadows/Whites/Blacks) */}
+          <feComponentTransfer id="f-tonal">
+            <feFuncR type="gamma" amplitude="1" exponent="1" offset="0" />
+            <feFuncG type="gamma" amplitude="1" exponent="1" offset="0" />
+            <feFuncB type="gamma" amplitude="1" exponent="1" offset="0" />
+          </feComponentTransfer>
+
+          {/* 4. Saturation & Vibrance */}
+          <feColorMatrix id="f-saturation" type="saturate" values="1" />
+
+          {/* 5. Warmth & Tint */}
+          <feColorMatrix id="f-color-balance" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0" />
+
+          {/* 6. Sharpening (Optional) */}
           <feConvolveMatrix 
+            id="f-sharpen"
             order="3" 
             preserveAlpha="true" 
-            kernelMatrix={selectedPhoto ? `0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} ${1 + 4 * (selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0` : "0 -1 0 -1 5 -1 0 -1 0"} 
+            kernelMatrix="0 0 0 0 1 0 0 0 0" 
             divisor="1"
           />
         </filter>
+
         <filter id="grain-filter">
           <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" />
           <feColorMatrix type="saturate" values="0" />
@@ -2142,6 +2060,10 @@ export default function App() {
                         <img 
                           src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
                           className="w-full h-full object-cover opacity-50"
+                          style={{ 
+                            filter: getFilterString(previewSettings || selectedPhoto.settings),
+                            transform: `rotate(${selectedPhoto.settings.rotation}deg) scaleX(${selectedPhoto.settings.flipX ? -1 : 1}) scaleY(${selectedPhoto.settings.flipY ? -1 : 1})`
+                          }}
                           referrerPolicy="no-referrer"
                         />
                       )}
@@ -2266,74 +2188,20 @@ export default function App() {
                     </div>
                   ) : (
                       <div 
-                        className="relative flex items-center justify-center"
+                        className="relative flex items-center justify-center w-full h-full"
                         style={{ 
                           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                          width: '90%',
-                          height: '90%',
                           transition: 'none'
                         }}
                       >
-                      <div className="relative max-w-full max-h-full flex items-center justify-center">
-                        {/* Original Image (Underneath) */}
-                        {isComparing && (
-                          <img 
-                            src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                            alt="Original"
-                            className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none absolute"
-                            style={{ 
-                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
-                              clipPath: `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`
-                            }}
-                            referrerPolicy="no-referrer"
-                            draggable={false}
-                          />
-                        )}
+                        <PhotoCanvas 
+                          ref={imageRef}
+                          imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)}
+                          settings={previewSettings || selectedPhoto.settings}
+                          isComparing={isComparing}
+                          compareValue={compareValue}
+                        />
 
-                        {/* Edited Image */}
-                        <div className="relative max-w-full max-h-full flex items-center justify-center">
-                          <img 
-                            ref={imageRef}
-                            src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                            alt={selectedPhoto.title}
-                            className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
-                            style={{ 
-                              filter: `var(--img-filter)`,
-                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
-                              clipPath: isComparing 
-                                ? `inset(0 ${100 - compareValue}% 0 0)` 
-                                : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
-                              zIndex: 1
-                            }}
-                            referrerPolicy="no-referrer"
-                            draggable={false}
-                          />
-                          
-                          {/* Vignette Overlay */}
-                          <div 
-                            className="absolute inset-0 pointer-events-none z-[2] rounded-sm"
-                            style={{ 
-                              background: `radial-gradient(circle, transparent 40%, rgba(0,0,0,var(--img-vignette-opacity)) 100%)`,
-                              clipPath: isComparing 
-                                ? `inset(0 ${100 - compareValue}% 0 0)` 
-                                : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
-                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`
-                            }}
-                          />
-
-                          {/* Grain Overlay */}
-                          <div 
-                            className="absolute inset-0 pointer-events-none z-[3] rounded-sm mix-blend-overlay"
-                            style={{ 
-                              filter: 'url(#grain-filter)',
-                              opacity: 'var(--img-grain-opacity)',
-                              clipPath: isComparing 
-                                ? `inset(0 ${100 - compareValue}% 0 0)` 
-                                : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
-                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`
-                            }}
-                          />
-                        </div>
 
                         {/* Crop Overlay */}
                         {isCropping && (
@@ -2368,21 +2236,8 @@ export default function App() {
                             />
                           </>
                         )}
-                        {/* Color Balance Overlays */}
-                        <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: selectedPhoto.settings.shadowTint }} />
-                        <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: selectedPhoto.settings.midtoneTint }} />
-                        <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-40" style={{ backgroundColor: selectedPhoto.settings.highlightTint }} />
-                        
-                        {/* Vignette Overlay */}
-                        <div 
-                          className="absolute inset-0 pointer-events-none"
-                          style={{ 
-                            background: `radial-gradient(circle, transparent calc(100% - (var(--img-vignette) * 100%)), rgba(0,0,0,var(--img-vignette)) 100%)`
-                          }}
-                        />
                       </div>
-                    </div>
-                  )}
+                    )}
                 </div>
 
                 {/* Filmstrip */}

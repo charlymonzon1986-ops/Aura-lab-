@@ -81,25 +81,6 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
-    
-    /* Image Editor Variables */
-    --img-brightness: 100%;
-    --img-contrast: 100%;
-    --img-saturate: 100%;
-    --img-sepia: 0%;
-    --img-hue: 0deg;
-    --img-exposure: 1;
-    --img-vignette: 0;
-    --img-rotate: 0deg;
-    --img-flip-x: 1;
-    --img-flip-y: 1;
-    --img-sepia-val: 0%;
-    --img-blur: 0px;
-    --img-filter: none;
-    --img-crop-top: 0%;
-    --img-crop-right: 0%;
-    --img-crop-bottom: 0%;
-    --img-crop-left: 0%;
 }
 
 .custom-scrollbar::-webkit-scrollbar {
