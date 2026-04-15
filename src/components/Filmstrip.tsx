@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Photo } from "../types";
 import { motion } from "motion/react";
-import { fixImageUrl } from "../lib/imageProcessing";
+import { fixImageUrl, getFilterString } from "../lib/imageProcessing";
 
 interface FilmstripProps {
   photos: Photo[];
@@ -38,6 +38,7 @@ export function Filmstrip({ photos, selectedPhotoId, onSelect }: FilmstripProps)
             src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
             alt={photo.title}
             className="w-full h-full object-cover"
+            style={{ filter: getFilterString(photo.settings) }}
             referrerPolicy="no-referrer"
           />
           {/* Color Balance Overlays for Filmstrip */}

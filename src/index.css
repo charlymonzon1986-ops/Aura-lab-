@@ -95,6 +95,7 @@
     --img-flip-y: 1;
     --img-sepia-val: 0%;
     --img-blur: 0px;
+    --img-filter: none;
     --img-crop-top: 0%;
     --img-crop-right: 0%;
     --img-crop-bottom: 0%;

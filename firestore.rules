@@ -34,7 +34,9 @@ service cloud.firestore {
       return data.keys().hasAll(['userId', 'url', 'settings']) &&
              data.userId == request.auth.uid &&
              data.url is string &&
-             data.url.size() < 2000000;
+             data.url.size() < 2000000 &&
+             (!('rating' in data) || (data.rating is int && data.rating >= 0 && data.rating <= 5)) &&
+             (!('colorTag' in data) || (data.colorTag in ['none', 'red', 'yellow', 'green', 'blue', 'purple']));
     }
 
     function isValidFolder(data) {
@@ -50,8 +52,15 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isAuthenticated() && (isOwner(userId) || isAdmin());
-      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      allow create: if isAuthenticated() && isOwner(userId) && 
+                    request.resource.data.plan == 'free' && 
+                    request.resource.data.role == 'user';
+      allow update: if isAuthenticated() && (
+        isAdmin() || 
+        (isOwner(userId) && 
+         request.resource.data.plan == resource.data.plan && 
+         request.resource.data.role == resource.data.role)
+      );
     }
 
     match /photos/{photoId} {

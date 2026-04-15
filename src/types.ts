@@ -12,6 +12,8 @@ export interface Photo {
   size?: number;
   storagePath?: string | null;
   folderId?: string | null;
+  rating?: number; // 0-5 stars
+  colorTag?: 'none' | 'red' | 'yellow' | 'green' | 'blue' | 'purple';
 }
 
 export interface Folder {
@@ -94,6 +96,8 @@ export interface LightingSettings {
   sepia: number;
   grain: number;
   blur: number;
+  lut?: string | null; // URL or name of the LUT
+  lutIntensity?: number;
   
   // Color Balance (HSL/Wheels)
   shadowTint: string; // hex or hsl
@@ -131,6 +135,8 @@ export const DEFAULT_SETTINGS: LightingSettings = {
   sepia: 0,
   grain: 0,
   blur: 0,
+  lut: null,
+  lutIntensity: 100,
   shadowTint: "transparent",
   midtoneTint: "transparent",
   highlightTint: "transparent",

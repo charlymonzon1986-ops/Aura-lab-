@@ -10,6 +10,8 @@ import axios from "axios";
 import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
 import B2 from 'backblaze-b2';
+import archiver from 'archiver';
+import { Photo, LightingSettings } from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -245,6 +247,17 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(cors());
 
+  // Serve WASM files from sql.js
+  const sqlJsDist = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
+  if (fs.existsSync(sqlJsDist)) {
+    console.log("✅ Serving sql.js WASM from:", sqlJsDist);
+    app.use('/sqljs', express.static(sqlJsDist, {
+      setHeaders: (res) => {
+        res.set('Content-Type', 'application/wasm');
+      }
+    }));
+  }
+
   // Diagnostic route
   app.get("/api/debug-storage", async (req, res) => {
     res.json({ 
@@ -419,6 +432,73 @@ async function startServer() {
     }
   });
 
+  // Batch Export Endpoint
+  app.post("/api/export/batch", express.json({ limit: '50mb' }), async (req, res) => {
+    const { photos, format = 'jpg', quality = 90 } = req.body as { photos: Photo[], format: string, quality: number };
+    
+    if (!photos || !Array.isArray(photos)) {
+      return res.status(400).json({ error: "No photos provided" });
+    }
+
+    console.log(`[Batch Export] Starting export for ${photos.length} photos...`);
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    res.attachment(`aura-export-${Date.now()}.zip`);
+    archive.pipe(res);
+
+    for (const photo of photos) {
+      try {
+        let buffer: Buffer;
+        if (photo.url.startsWith('/api/b2-proxy/')) {
+          const fileName = decodeURIComponent(photo.url.split('/api/b2-proxy/')[1]);
+          buffer = await downloadFromB2(fileName);
+        } else {
+          const response = await axios.get(photo.url, { responseType: 'arraybuffer' });
+          buffer = Buffer.from(response.data);
+        }
+
+        // Apply basic adjustments with sharp (replicating core logic)
+        const s = photo.settings;
+        let pipeline = sharp(buffer);
+
+        // Basic adjustments
+        pipeline = pipeline.modulate({
+          brightness: (s.brightness || 100) / 100,
+          saturation: (s.saturation || 100) / 100,
+        });
+
+        // Contrast
+        if (s.contrast !== 100) {
+          // Sharp doesn't have a direct contrast modulation like brightness, 
+          // but we can use linear or gamma. For simplicity in batch:
+          pipeline = pipeline.linear((s.contrast || 100) / 100, -(s.contrast || 100) + 100);
+        }
+
+        // Sharpening
+        if (s.sharpening > 0) {
+          pipeline = pipeline.sharpen({ sigma: s.sharpening / 20 });
+        }
+
+        // Blur (Noise Reduction approximation)
+        if (s.noiseReduction > 0) {
+          pipeline = pipeline.blur(s.noiseReduction / 10);
+        }
+
+        const processedBuffer = await pipeline
+          .jpeg({ quality })
+          .toBuffer();
+
+        const fileName = `${photo.title || 'photo'}-${photo.id.slice(0, 5)}.jpg`;
+        archive.append(processedBuffer, { name: fileName });
+        console.log(`[Batch Export] Added ${fileName} to archive`);
+      } catch (err) {
+        console.error(`[Batch Export] Failed to process photo ${photo.id}:`, err);
+      }
+    }
+
+    archive.finalize();
+  });
+
   // Delete endpoint for B2 files
   app.post("/api/delete-file", async (req, res) => {
     try {
@@ -512,6 +592,11 @@ async function startServer() {
     console.log(`Starting in PRODUCTION mode serving from: ${distPath}`);
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
+      // If the request looks like a file (has an extension) and it's not .html, return 404
+      // instead of index.html to avoid confusing WASM/JS loaders.
+      if (req.path.includes('.') && !req.path.endsWith('.html')) {
+        return res.status(404).send('Not Found');
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

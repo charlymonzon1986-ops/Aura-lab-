@@ -1,7 +1,7 @@
 import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { 
   X,
   LayoutGrid, 
@@ -45,7 +45,8 @@ import {
   CheckCircle2,
   RotateCw,
   Trash2 as TrashIcon,
-  ClipboardPaste
+  ClipboardPaste,
+  Star
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -70,6 +71,7 @@ import { CropOverlay } from "@/src/components/CropOverlay";
 import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
 import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
+import { savePhotoLocally, getLocalPhotos, initLocalDB } from "@/src/lib/db";
 import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject, getBlob } from "firebase/storage";
 import { 
   collection, 
@@ -102,7 +104,7 @@ const fixImageUrlLocal = (url: string) => {
 };
 
 // Initialize Gemini AI (Free Tier)
-const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -174,6 +176,7 @@ export default function App() {
   const [newFolderName, setNewFolderName] = React.useState("");
   const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
+  const [previewSettings, setPreviewSettings] = React.useState<LightingSettings | null>(null);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
   const [copiedSettings, setCopiedSettings] = React.useState<LightingSettings | null>(null);
   
@@ -311,9 +314,19 @@ export default function App() {
         id: doc.id
       })) as Photo[];
       setPhotos(fetchedPhotos);
+      
+      // Save to local DB for offline access
+      fetchedPhotos.forEach(p => savePhotoLocally(p.id, p));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, "photos");
-      toast.error("Error al cargar tus fotos");
+      
+      // Fallback to local DB if offline or error
+      getLocalPhotos().then(localPhotos => {
+        if (localPhotos.length > 0) {
+          setPhotos(localPhotos);
+          toast.info("Cargando fotos desde el caché local (Modo Offline)");
+        }
+      });
     });
 
     return () => unsubscribe();
@@ -525,6 +538,15 @@ export default function App() {
     [photos, selectedPhotoId]
   );
 
+  // Reset preview settings when photo changes
+  React.useEffect(() => {
+    if (selectedPhoto) {
+      setPreviewSettings(selectedPhoto.settings);
+    } else {
+      setPreviewSettings(null);
+    }
+  }, [selectedPhotoId]);
+
   const updatePhotoSettings = React.useCallback((id: string, updates: Partial<LightingSettings>) => {
     setPhotos(prev => {
       const photo = prev.find(p => p.id === id);
@@ -546,6 +568,24 @@ export default function App() {
       return prev.map(p => p.id === id ? { ...p, settings: newSettings } : p);
     });
   }, []);
+
+  const updatePhotoRating = async (id: string, rating: number) => {
+    setPhotos(prev => prev.map(p => p.id === id ? { ...p, rating } : p));
+    try {
+      await updateDoc(doc(db, "photos", id), { rating });
+    } catch (error) {
+      console.error("Error updating rating:", error);
+    }
+  };
+
+  const updatePhotoColorTag = async (id: string, colorTag: Photo['colorTag']) => {
+    setPhotos(prev => prev.map(p => p.id === id ? { ...p, colorTag } : p));
+    try {
+      await updateDoc(doc(db, "photos", id), { colorTag });
+    } catch (error) {
+      console.error("Error updating color tag:", error);
+    }
+  };
 
   // Debounced Firestore sync
   React.useEffect(() => {
@@ -673,12 +713,12 @@ export default function App() {
     const nrBlur = s.noiseReduction / 40;
     root.style.setProperty('--img-blur', `${s.blur + nrBlur}px`);
     
-    // Sharpening (handled via SVG filter)
-    root.style.setProperty('--img-sharpen', `${(s.sharpening + s.focus) / 100}`);
-    root.style.setProperty('--img-crop-top', `${s.cropTop}%`);
-    root.style.setProperty('--img-crop-right', `${s.cropRight}%`);
-    root.style.setProperty('--img-crop-bottom', `${s.cropBottom}%`);
-    root.style.setProperty('--img-crop-left', `${s.cropLeft}%`);
+    // Consolidate all filters into one variable for robustness
+    root.style.setProperty('--img-filter', getFilterString(s));
+    
+    root.style.setProperty('--img-vignette-opacity', `${s.vignette / 100}`);
+    root.style.setProperty('--img-grain-opacity', `${s.grain / 200}`);
+    root.style.setProperty('--img-rotate', `${s.rotation}deg`);
   }, [selectedPhoto?.settings]);
   const deletePhoto = async (id: string) => {
     if (!user || !userProfile) {
@@ -977,47 +1017,45 @@ export default function App() {
       const base64Content = await base64Promise;
 
       console.log("Sending request to Gemini for Smart Enhance...");
-      const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional, equilibrada y natural. 
-              REGLAS ESTRICTAS:
-              - NO quemes las altas luces. Si la foto es brillante o tiene zonas blancas grandes, reduce 'highlights' y 'exposure'.
-              - NO satures en exceso. Mantén 'saturation' y 'vibrance' en niveles sutiles (cerca de 100).
-              - El objetivo es un revelado orgánico, similar a una película analógica de alta calidad.
-              - Si la foto ya está bien expuesta, devuelve valores neutros (100 para la mayoría, 0 para exposure).
-              
-              Responde ÚNICAMENTE con un objeto JSON con estos campos:
-              - brightness (95-105, 100 es neutro)
-              - contrast (98-108, 100 es neutro)
-              - saturation (98-105, 100 es neutro)
-              - exposure (-0.2 a 0.2, 0 es neutro)
-              - warmth (99-101, 100 es neutro)
-              - tint (99.5-100.5, 100 es neutro)
-              - vibrance (100-108, 100 es neutro)
-              - clarity (0-8, 0 es neutro)
-              - highlights (70-100, 100 es neutro)
-              - shadows (95-105, 100 es neutro)
-              - whites (85-100, 100 es neutro)
-              - blacks (95-105, 100 es neutro)` },
-              {
-                inlineData: {
-                  mimeType: blob.type || "image/jpeg",
-                  data: base64Content
-                }
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional, equilibrada y natural. 
+            REGLAS ESTRICTAS:
+            - NO quemes las altas luces. Si la foto es brillante o tiene zonas blancas grandes, reduce 'highlights' y 'exposure'.
+            - NO satures en exceso. Mantén 'saturation' y 'vibrance' en niveles sutiles (cerca de 100).
+            - El objetivo es un revelado orgánico, similar a una película analógica de alta calidad.
+            - Si la foto ya está bien expuesta, devuelve valores neutros (100 para la mayoría, 0 para exposure).
+            
+            Responde ÚNICAMENTE con un objeto JSON con estos campos:
+            - brightness (95-105, 100 es neutro)
+            - contrast (98-108, 100 es neutro)
+            - saturation (98-105, 100 es neutro)
+            - exposure (-0.2 a 0.2, 0 es neutro)
+            - warmth (-5 a 5, 0 es neutro)
+            - tint (-2 a 2, 0 es neutro)
+            - vibrance (100-108, 100 es neutro)
+            - clarity (0-8, 0 es neutro)
+            - highlights (70-100, 100 es neutro)
+            - shadows (95-105, 100 es neutro)
+            - whites (85-100, 100 es neutro)
+            - blacks (95-105, 100 es neutro)` },
+            {
+              inlineData: {
+                mimeType: blob.type || "image/jpeg",
+                data: base64Content
               }
-            ]
-          }
-        ],
-        generationConfig: {
+            }
+          ]
+        },
+        config: {
           responseMimeType: "application/json"
         }
       });
 
-      const responseText = result.response.text();
+      const responseText = result.text;
+      if (!responseText) throw new Error("No se recibió respuesta de la IA");
       console.log("Gemini response received for Smart Enhance:", responseText);
       const aiResponse = JSON.parse(responseText);
       
@@ -1099,6 +1137,41 @@ export default function App() {
     }
   };
 
+  const handleBatchExport = async () => {
+    if (selectedPhotoIds.length === 0) {
+      toast.error("Selecciona fotos para exportar");
+      return;
+    }
+
+    const selectedPhotos = photos.filter(p => selectedPhotoIds.includes(p.id));
+    const toastId = toast.loading(`Preparando exportación de ${selectedPhotos.length} fotos...`);
+
+    try {
+      const response = await axios.post('/api/export/batch', {
+        photos: selectedPhotos,
+        format: 'jpg',
+        quality: 90
+      }, {
+        responseType: 'blob'
+      });
+
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `aura-batch-export-${Date.now()}.zip`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      toast.success("Exportación completada", { id: toastId });
+      setSelectedPhotoIds([]); // Clear selection after export
+    } catch (error) {
+      console.error("Batch export error:", error);
+      toast.error("Error al exportar las fotos", { id: toastId });
+    }
+  };
+
   const selectAllPhotos = () => {
     if (photos.length === 0) return;
     const allIds = photos.map(p => p.id);
@@ -1156,23 +1229,21 @@ export default function App() {
       Responde ÚNICAMENTE con el JSON.`;
 
       console.log("Sending request to Gemini...");
-      const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt },
-              { inlineData: { data: imageData, mimeType: blob.type || "image/jpeg" } }
-            ]
-          }
-        ],
-        generationConfig: {
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            { text: prompt },
+            { inlineData: { data: imageData, mimeType: blob.type || "image/jpeg" } }
+          ]
+        },
+        config: {
           responseMimeType: "application/json"
         }
       });
 
-      const responseText = result.response.text();
+      const responseText = result.text;
+      if (!responseText) throw new Error("No se recibió respuesta de la IA");
       console.log("Gemini response received:", responseText);
       const analysis = JSON.parse(responseText);
 
@@ -1328,6 +1399,11 @@ export default function App() {
             kernelMatrix={selectedPhoto ? `0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} ${1 + 4 * (selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0 -${(selectedPhoto.settings.sharpening + selectedPhoto.settings.focus) / 40} 0` : "0 -1 0 -1 5 -1 0 -1 0"} 
             divisor="1"
           />
+        </filter>
+        <filter id="grain-filter">
+          <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" />
+          <feColorMatrix type="saturate" values="0" />
+          <feComposite operator="in" in2="SourceGraphic" />
         </filter>
       </svg>
 
@@ -1497,7 +1573,7 @@ export default function App() {
           
           <div className="flex items-center gap-2 md:gap-4">
             <Badge variant="outline" className="bg-zinc-900 border-zinc-800 text-zinc-500 font-mono text-[8px] md:text-[9px] px-1 md:px-2">
-              v1.2.0
+              v1.3.0-alpha
             </Badge>
           </div>
         </header>
@@ -1523,7 +1599,7 @@ export default function App() {
                           className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-bold uppercase tracking-widest"
                         >
                           <Sparkles className="w-3 h-3" />
-                          Tecnología Aura v1.2
+                          Tecnología Aura v1.3
                         </motion.div>
                         <h2 className="text-5xl md:text-7xl font-light tracking-tight text-white leading-tight">
                           La luz perfecta para cada <span className="text-amber-500 italic font-medium">fotografía</span>.
@@ -1808,6 +1884,19 @@ export default function App() {
                                 variant="ghost" 
                                 className="h-9 text-[10px] uppercase font-bold tracking-widest text-zinc-400 hover:text-white"
                                 onClick={() => {
+                                  toast.info("Iniciando exportación por lotes...");
+                                  // We'll implement this logic
+                                  handleBatchExport();
+                                }}
+                              >
+                                <Download className="w-3.5 h-3.5 mr-2" />
+                                Exportar
+                              </Button>
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-9 text-[10px] uppercase font-bold tracking-widest text-zinc-400 hover:text-white"
+                                onClick={() => {
                                   // Logic to delete multiple if needed
                                   toast.error("Borrado múltiple no implementado aún");
                                 }}
@@ -1849,6 +1938,41 @@ export default function App() {
                                 >
                                   {selectedPhotoIds.includes(photo.id) && <CheckCircle2 className="w-3.5 h-3.5 text-black" />}
                                 </div>
+
+                                {/* Rating and Color Tag Overlay */}
+                                <div className="absolute bottom-3 left-3 right-3 z-20 flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <div className="flex items-center gap-0.5 bg-black/60 backdrop-blur-md rounded-full px-2 py-1 border border-white/10">
+                                    {[1, 2, 3, 4, 5].map((star) => (
+                                      <Star 
+                                        key={star}
+                                        className={`w-3 h-3 cursor-pointer transition-colors ${star <= (photo.rating || 0) ? 'text-amber-500 fill-amber-500' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          updatePhotoRating(photo.id, star === photo.rating ? 0 : star);
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    {['red', 'yellow', 'green', 'blue', 'purple'].map((color) => (
+                                      <div 
+                                        key={color}
+                                        className={`w-2.5 h-2.5 rounded-full cursor-pointer border border-white/20 transition-transform hover:scale-125 ${photo.colorTag === color ? 'ring-2 ring-white scale-110' : ''}`}
+                                        style={{ 
+                                          backgroundColor: color === 'red' ? '#ef4444' : 
+                                                           color === 'yellow' ? '#f59e0b' : 
+                                                           color === 'green' ? '#10b981' : 
+                                                           color === 'blue' ? '#3b82f6' : '#a855f7' 
+                                        }}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          updatePhotoColorTag(photo.id, color === photo.colorTag ? 'none' : color as any);
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+
                                 {(photo.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url) ? (
                                   <img 
                                     src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
@@ -1964,7 +2088,7 @@ export default function App() {
                 <Button 
                   variant={isComparing ? "default" : "outline"} 
                   size="sm" 
-                  className={`h-8 ${isComparing ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  className={`h-8 ${isComparing ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400 hover:text-white'} text-[10px] uppercase font-bold tracking-widest gap-2`}
                   onClick={() => setIsComparing(!isComparing)}
                 >
                   <Split className="w-3 h-3" />
@@ -1974,7 +2098,7 @@ export default function App() {
                 <Button 
                   variant={isCropping ? "default" : "outline"} 
                   size="sm" 
-                  className={`h-8 ${isCropping ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  className={`h-8 ${isCropping ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400 hover:text-white'} text-[10px] uppercase font-bold tracking-widest gap-2`}
                   onClick={() => setIsCropping(!isCropping)}
                 >
                   <Crop className="w-3 h-3" />
@@ -1989,14 +2113,14 @@ export default function App() {
                 <Button 
                   variant="outline" 
                   size="sm" 
-                  className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" 
+                  className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2" 
                   onClick={() => selectedPhoto && analyzePhotoWithIA(selectedPhoto.id)}
                   disabled={isAnalyzing}
                 >
                   <Zap className="w-3 h-3 text-amber-500" />
                   {isAnalyzing ? 'Analizando...' : 'Análisis IA'}
                 </Button>
-                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
+                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
                   <RotateCcw className="w-3 h-3" />
                   Reset
                 </Button>
@@ -2167,22 +2291,49 @@ export default function App() {
                         )}
 
                         {/* Edited Image */}
-                        <img 
-                          ref={imageRef}
-                          src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                          alt={selectedPhoto.title}
-                          className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
-                          style={{ 
-                            filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur)) ${selectedPhoto.settings.sharpening > 0 || selectedPhoto.settings.focus > 0 ? 'url(#sharpen-filter)' : ''}`,
-                            transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
-                            clipPath: isComparing 
-                              ? `inset(0 ${100 - compareValue}% 0 0)` 
-                              : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
-                            zIndex: 1
-                          }}
-                          referrerPolicy="no-referrer"
-                          draggable={false}
-                        />
+                        <div className="relative max-w-full max-h-full flex items-center justify-center">
+                          <img 
+                            ref={imageRef}
+                            src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                            alt={selectedPhoto.title}
+                            className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
+                            style={{ 
+                              filter: `var(--img-filter)`,
+                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
+                              clipPath: isComparing 
+                                ? `inset(0 ${100 - compareValue}% 0 0)` 
+                                : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
+                              zIndex: 1
+                            }}
+                            referrerPolicy="no-referrer"
+                            draggable={false}
+                          />
+                          
+                          {/* Vignette Overlay */}
+                          <div 
+                            className="absolute inset-0 pointer-events-none z-[2] rounded-sm"
+                            style={{ 
+                              background: `radial-gradient(circle, transparent 40%, rgba(0,0,0,var(--img-vignette-opacity)) 100%)`,
+                              clipPath: isComparing 
+                                ? `inset(0 ${100 - compareValue}% 0 0)` 
+                                : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
+                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`
+                            }}
+                          />
+
+                          {/* Grain Overlay */}
+                          <div 
+                            className="absolute inset-0 pointer-events-none z-[3] rounded-sm mix-blend-overlay"
+                            style={{ 
+                              filter: 'url(#grain-filter)',
+                              opacity: 'var(--img-grain-opacity)',
+                              clipPath: isComparing 
+                                ? `inset(0 ${100 - compareValue}% 0 0)` 
+                                : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
+                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`
+                            }}
+                          />
+                        </div>
 
                         {/* Crop Overlay */}
                         {isCropping && (
@@ -2253,7 +2404,7 @@ export default function App() {
                           Histograma en Tiempo Real
                         </h4>
                         <Histogram 
-                          settings={selectedPhoto.settings} 
+                          settings={previewSettings || selectedPhoto.settings} 
                           imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
                         />
                       </div>
@@ -2287,7 +2438,11 @@ export default function App() {
                         {/* Main Controls */}
                         <LightingControls 
                           settings={selectedPhoto.settings} 
-                          onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
+                          onChange={(s) => {
+                            updatePhotoSettings(selectedPhoto.id, s);
+                            setPreviewSettings(s);
+                          }}
+                          onPreviewChange={setPreviewSettings}
                           userPlan={userProfile?.plan || 'free'}
                           onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
                           isAutoEnhancing={isAutoEnhancing}

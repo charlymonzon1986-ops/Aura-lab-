@@ -11,10 +11,12 @@ import {
 import { LightingSettings, PlanType } from "@/src/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { getFilterString } from "@/src/lib/imageProcessing";
 
 interface LightingControlsProps {
   settings: LightingSettings;
   onChange: (settings: LightingSettings) => void;
+  onPreviewChange?: (settings: LightingSettings) => void;
   userPlan: PlanType;
   onSmartEnhance: () => void;
   isAutoEnhancing: boolean;
@@ -87,7 +89,7 @@ const ControlItem = React.memo(function ControlItem({
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export const LightingControls = React.memo(function LightingControls({ 
-  settings, onChange, userPlan, onSmartEnhance, isAutoEnhancing,
+  settings, onChange, onPreviewChange, userPlan, onSmartEnhance, isAutoEnhancing,
   onCopySettings, onPasteSettings, hasCopiedSettings
 }: LightingControlsProps) {
 
@@ -104,24 +106,15 @@ export const LightingControls = React.memo(function LightingControls({
   // Escribe CSS variables — solo se llama via RAF, nunca dispara re-render
   const updateCSS = React.useCallback((s: LightingSettings) => {
     const root = document.documentElement;
-    const whiteAdj = (s.whites - 100) / 2;
-    const blackAdj = (s.blacks - 100) / 2;
-    const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
-    const highAdj = (s.highlights - 100) / 4;
-    const shadAdj = (s.shadows - 100) / 4;
-    const effectiveContrast = s.contrast + (s.clarity / 2) + highAdj - shadAdj;
-
-    root.style.setProperty('--img-brightness', `${effectiveBrightness}%`);
-    root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
-    root.style.setProperty('--img-saturate', `${s.saturation * (s.vibrance / 100)}%`);
-    root.style.setProperty('--img-sepia', `${s.warmth > 0 ? s.warmth / 2 : 0}%`);
-    root.style.setProperty('--img-hue', `${(s.warmth < 0 ? s.warmth / 2 : 0) + s.tint / 2}deg`);
-    root.style.setProperty('--img-vignette', `${s.vignette / 100}`);
+    
+    // Consolidate all filters into one variable for robustness
+    root.style.setProperty('--img-filter', getFilterString(s));
+    
+    root.style.setProperty('--img-vignette-opacity', `${s.vignette / 100}`);
+    root.style.setProperty('--img-grain-opacity', `${s.grain / 200}`);
     root.style.setProperty('--img-rotate', `${s.rotation}deg`);
     root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
     root.style.setProperty('--img-flip-y', s.flipY ? '-1' : '1');
-    root.style.setProperty('--img-sepia-val', `${s.sepia}%`);
-    root.style.setProperty('--img-blur', `${s.blur}px`);
     root.style.setProperty('--img-crop-top', `${s.cropTop}%`);
     root.style.setProperty('--img-crop-bottom', `${s.cropBottom}%`);
     root.style.setProperty('--img-crop-left', `${s.cropLeft}%`);
@@ -135,7 +128,8 @@ export const LightingControls = React.memo(function LightingControls({
     setLocalSettings(next); // re-render solo de LightingControls, no de App
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => updateCSS(next));
-  }, [updateCSS]);
+    if (onPreviewChange) onPreviewChange(next);
+  }, [updateCSS, onPreviewChange]);
 
   // Guarda en estado global solo al soltar — esto sí dispara App
   const handleSliderCommit = React.useCallback((key: keyof LightingSettings, val: number) => {
@@ -334,6 +328,47 @@ export const LightingControls = React.memo(function LightingControls({
           <ControlItem label="Sepia" icon={Palette} value={s.sepia} min={0} max={100} settingKey="sepia" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
           <ControlItem label="Grano" icon={Ghost} value={s.grain} min={0} max={100} settingKey="grain" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
           <ControlItem label="Desenfoque" icon={CloudFog} value={s.blur} min={0} max={20} step={0.1} settingKey="blur" locked={isLocked('studio')} onSliderChange={handleSliderChange} onSliderCommit={handleSliderCommit} />
+        </div>
+      </div>
+
+      {/* LUTs (Color Lookup Tables) */}
+      <div className="space-y-6">
+        <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
+          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600">LUTs (Color Lookup)</h4>
+          {isLocked('studio') && <Badge variant="outline" className="text-amber-500 border-amber-500/20 text-[8px]">STUDIO</Badge>}
+        </div>
+        <div className={`space-y-4 ${isLocked('studio') ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { id: null, name: 'Ninguno' },
+              { id: 'cinematic', name: 'Cine' },
+              { id: 'vintage', name: 'Vintage' },
+              { id: 'noir', name: 'Noir' },
+              { id: 'teal-orange', name: 'T&O' },
+              { id: 'warm-gold', name: 'Gold' }
+            ].map((lut) => (
+              <button
+                key={lut.id || 'none'}
+                onClick={() => handleSliderCommit('lut', lut.id as any)}
+                className={`px-2 py-2 rounded-md text-[9px] font-bold uppercase tracking-tighter transition-all border ${s.lut === lut.id ? 'bg-amber-500 text-black border-amber-500' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
+              >
+                {lut.name}
+              </button>
+            ))}
+          </div>
+          {s.lut && (
+            <ControlItem 
+              label="Intensidad LUT" 
+              icon={Sparkles} 
+              value={s.lutIntensity || 100} 
+              min={0} 
+              max={100} 
+              settingKey="lutIntensity" 
+              locked={isLocked('studio')} 
+              onSliderChange={handleSliderChange} 
+              onSliderCommit={handleSliderCommit} 
+            />
+          )}
         </div>
       </div>
 
