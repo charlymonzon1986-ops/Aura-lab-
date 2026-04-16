@@ -81,7 +81,7 @@ export function ExportModal({ isOpen, onClose, onExport, photoTitle }: ExportMod
                 <span className="text-[10px] font-mono text-amber-500">{Math.round(settings.quality * 100)}%</span>
               </div>
               <Slider
-                value={[settings.quality * 100]}
+                value={[isNaN(settings.quality) ? 90 : settings.quality * 100]}
                 min={10}
                 max={100}
                 step={1}

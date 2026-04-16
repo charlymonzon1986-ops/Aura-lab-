@@ -1696,7 +1696,7 @@ export default function App() {
                                 </span>
                                 <span>{Math.round(uploadProgress)}%</span>
                               </div>
-                              <Progress value={uploadProgress} className="h-1 bg-zinc-800" />
+                              <Progress value={isNaN(uploadProgress) ? 0 : uploadProgress} className="h-1 bg-zinc-800" />
                             </div>
                           )}
                         </div>
@@ -2263,7 +2263,7 @@ export default function App() {
                               type="range"
                               min="0"
                               max="100"
-                              value={compareValue}
+                              value={isNaN(compareValue) ? 50 : compareValue}
                               onMouseDown={(e) => e.stopPropagation()}
                               onMouseMove={(e) => e.stopPropagation()}
                               onMouseUp={(e) => e.stopPropagation()}
@@ -2386,7 +2386,7 @@ export default function App() {
                 </span>
               </div>
               <Progress 
-                value={((userProfile?.storageUsed || 0) / (userProfile?.plan === 'studio' ? 1024 * 1024 * 1024 * 1024 : userProfile?.plan === 'pro' ? 50 * 1024 * 1024 * 1024 : 2 * 1024 * 1024 * 1024)) * 100} 
+                value={isNaN(((userProfile?.storageUsed || 0) / (userProfile?.plan === 'studio' ? 1024 * 1024 * 1024 * 1024 : userProfile?.plan === 'pro' ? 50 * 1024 * 1024 * 1024 : 2 * 1024 * 1024 * 1024)) * 100) ? 0 : ((userProfile?.storageUsed || 0) / (userProfile?.plan === 'studio' ? 1024 * 1024 * 1024 * 1024 : userProfile?.plan === 'pro' ? 50 * 1024 * 1024 * 1024 : 2 * 1024 * 1024 * 1024)) * 100} 
                 className="h-2 bg-zinc-900" 
               />
             </div>
