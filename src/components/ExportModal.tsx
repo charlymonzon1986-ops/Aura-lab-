@@ -76,7 +76,7 @@ export function ExportModal({ isOpen, onClose, onExport, photoTitle }: ExportMod
               <div className="flex items-center justify-between">
                 <Label className="text-[10px] uppercase font-bold tracking-widest text-zinc-500 flex items-center gap-2">
                   <ImageIcon className="w-3 h-3" />
-                  Calidad
+                  Calidad de Compresión
                 </Label>
                 <span className="text-[10px] font-mono text-amber-500">{Math.round(settings.quality * 100)}%</span>
               </div>
@@ -88,6 +88,9 @@ export function ExportModal({ isOpen, onClose, onExport, photoTitle }: ExportMod
                 onValueChange={(vals: number[]) => setSettings({ ...settings, quality: vals[0] / 100 })}
                 className="py-2"
               />
+              <p className="text-[8px] text-zinc-600 italic">
+                Ajusta el nivel de compresión. 100% es máxima calidad, menor porcentaje reduce el tamaño del archivo.
+              </p>
             </div>
           )}
 

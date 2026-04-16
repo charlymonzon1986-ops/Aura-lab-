@@ -1246,25 +1246,46 @@ export default function App() {
       img.onload = async () => {
         const s = selectedPhoto.settings;
         
-        // Calculate dimensions based on scale and rotation
-        const isRotated = (s.rotation / 90) % 2 !== 0;
-        const baseWidth = isRotated ? img.height : img.width;
-        const baseHeight = isRotated ? img.width : img.height;
+        // Calculate dimensions based on any rotation angle
+        const angleRad = (s.rotation * Math.PI) / 180;
+        const baseWidth = Math.abs(img.width * Math.cos(angleRad)) + Math.abs(img.height * Math.sin(angleRad));
+        const baseHeight = Math.abs(img.width * Math.sin(angleRad)) + Math.abs(img.height * Math.cos(angleRad));
         
         const exportWidth = baseWidth * settings.scale;
         const exportHeight = baseHeight * settings.scale;
 
+        // Limit max resolution to avoid browser crashes (e.g., 8192px is safe for most)
+        const MAX_DIMENSION = 8192;
+        let finalScale = settings.scale;
+        if (exportWidth > MAX_DIMENSION || exportHeight > MAX_DIMENSION) {
+          finalScale = Math.min(MAX_DIMENSION / baseWidth, MAX_DIMENSION / baseHeight);
+          toast.warning(`Resolución ajustada a ${Math.round(finalScale * 100)}% por límites del navegador`);
+        }
+
+        const finalWidth = baseWidth * finalScale;
+        const finalHeight = baseHeight * finalScale;
+
         await renderImageToCanvas(canvas, img, s, {
-          width: exportWidth,
-          height: exportHeight
+          width: finalWidth,
+          height: finalHeight
         });
         
         const extension = settings.format.split('/')[1];
-        const link = document.createElement('a');
-        link.download = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.${extension}`;
-        link.href = canvas.toDataURL(settings.format, settings.quality);
-        link.click();
-        resolve(true);
+        const fileName = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.${extension}`;
+        
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error("No se pudo generar el archivo"));
+            return;
+          }
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = fileName;
+          link.href = url;
+          link.click();
+          URL.revokeObjectURL(url);
+          resolve(true);
+        }, settings.format, settings.quality);
       };
       img.onerror = reject;
       img.src = selectedPhoto.url;
@@ -2194,13 +2215,28 @@ export default function App() {
                           transition: 'none'
                         }}
                       >
-                        <PhotoCanvas 
-                          ref={imageRef}
-                          imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)}
-                          settings={previewSettings || selectedPhoto.settings}
-                          isComparing={isComparing}
-                          compareValue={compareValue}
-                        />
+                         {/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) && !selectedPhoto.thumbnailUrl ? (
+                           <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-900/50 p-12 rounded-2xl border border-zinc-800 backdrop-blur-xl">
+                             <ImageIcon className="w-20 h-20 mb-6 opacity-20" />
+                             <h3 className="text-xl font-bold text-white mb-2">Archivo RAW Detectado</h3>
+                             <p className="text-zinc-400 text-center max-w-xs mb-6">
+                               Los navegadores no pueden mostrar archivos RAW directamente. Por favor, sube una miniatura JPEG o espera a que el servidor la genere.
+                             </p>
+                             <div className="flex gap-3">
+                               <Button variant="outline" size="sm" className="border-zinc-800" onClick={() => setSelectedPhotoId(null)}>
+                                 Volver a Galería
+                               </Button>
+                             </div>
+                           </div>
+                         ) : (
+                           <PhotoCanvas 
+                             ref={imageRef}
+                             imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)}
+                             settings={previewSettings || selectedPhoto.settings}
+                             isComparing={isComparing}
+                             compareValue={compareValue}
+                           />
+                         )}
 
 
                         {/* Crop Overlay */}
