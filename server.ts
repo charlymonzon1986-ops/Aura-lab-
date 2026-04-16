@@ -244,6 +244,24 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Detect if running inside Electron packaged environment
+  const isProd = process.env.NODE_ENV === "production";
+  const isElectron = !!process.versions.electron;
+
+  // Base paths for static files
+  let distPath: string;
+  if (isElectron && isProd) {
+    // In packaged Electron, __dirname is dist-server/
+    distPath = path.join(__dirname, '..', 'dist');
+  } else {
+    distPath = process.env.FE_DIST_PATH || path.join(process.cwd(), 'dist');
+  }
+
+  console.log(`📂 Static files path determined as: ${distPath}`);
+  if (!fs.existsSync(distPath)) {
+    console.warn(`⚠️ Warning: Static path does not exist: ${distPath}`);
+  }
+
   app.use(express.json({ limit: '50mb' }));
   app.use(cors());
 
@@ -578,24 +596,6 @@ async function startServer() {
       return res.status(500).json({ error: "Error processing RAW thumbnail", details: error.message });
     }
   });
-
-// Detect if running inside Electron packaged environment
-const isProd = process.env.NODE_ENV === "production";
-const isElectron = !!process.versions.electron;
-
-// Base paths for static files
-let distPath: string;
-if (isElectron && isProd) {
-  // In packaged Electron, __dirname is dist-server/
-  distPath = path.join(__dirname, '..', 'dist');
-} else {
-  distPath = process.env.FE_DIST_PATH || path.join(process.cwd(), 'dist');
-}
-
-console.log(`📂 Static files path determined as: ${distPath}`);
-if (!fs.existsSync(distPath)) {
-  console.warn(`⚠️ Warning: Static path does not exist: ${distPath}`);
-}
 
   if (!isProd) {
     console.log("Starting in DEVELOPMENT mode with Vite middleware");
