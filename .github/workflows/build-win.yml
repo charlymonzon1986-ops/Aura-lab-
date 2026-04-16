@@ -1,0 +1,49 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:   # también permite lanzarlo manualmente desde GitHub
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Build Vite + electron-builder
+        run: npm run build:exe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Subir instalador como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aura-Lab-Setup-Windows
+          path: release/*.exe
+          retention-days: 30
+
+      - name: Crear Release de GitHub (solo en push a main/master)
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Aura Lab v${{ github.run_number }}"
+          draft: false
+          prerelease: false
+          files: release/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
