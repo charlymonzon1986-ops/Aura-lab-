@@ -578,7 +578,7 @@ async function startServer() {
 
   // Vite middleware for development
   const isProd = process.env.NODE_ENV === "production";
-  const distPath = path.join(process.cwd(), 'dist');
+  const distPath = process.env.FE_DIST_PATH || path.join(process.cwd(), 'dist');
 
   if (!isProd) {
     console.log("Starting in DEVELOPMENT mode with Vite middleware");
