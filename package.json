@@ -11,8 +11,6 @@
     "dev": "concurrently -k \"npm run dev:vite\" \"wait-on http://localhost:5173 && npm run dev:electron\"",
     "build": "vite build",
     "build:exe": "npm run build && electron-builder --win --x64",
-    "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
@@ -20,9 +18,7 @@
     "appId": "com.auralab.desktop",
     "productName": "Aura Lab",
     "copyright": "Copyright 2024",
-    "directories": {
-      "output": "release"
-    },
+    "directories": { "output": "release" },
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -31,23 +27,8 @@
       "node_modules/@img/**/*"
     ],
     "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
       "icon": "public/icon.ico"
-    },
-    "mac": {
-      "target": "dmg",
-      "icon": "public/icon.icns"
-    },
-    "linux": {
-      "target": "AppImage",
-      "icon": "public/icon.png"
     },
     "nsis": {
       "oneClick": false,
