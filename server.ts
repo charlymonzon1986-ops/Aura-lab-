@@ -13,8 +13,19 @@ import B2 from 'backblaze-b2';
 import archiver from 'archiver';
 import { Photo, LightingSettings } from './src/types';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Robust folder path detection for both ESM (Dev) and CJS (Electron/Production)
+let _dirname: string;
+try {
+  // @ts-ignore - In packaged Electron/Node CJS, __dirname is a global
+  if (typeof __dirname !== 'undefined') {
+    _dirname = __dirname;
+  } else {
+    _dirname = path.dirname(fileURLToPath(import.meta.url));
+  }
+} catch (e) {
+  _dirname = process.cwd();
+}
+const __dirname = _dirname;
 
 // Initialize B2 Client
 const b2 = new B2({
