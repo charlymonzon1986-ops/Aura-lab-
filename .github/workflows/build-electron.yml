@@ -27,11 +27,17 @@ jobs:
         run: npm run electron:build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Si necesitas variables de entorno durante el build, agrégalas aquí
+          NODE_ENV: production
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Get Build Timestamp
+        id: timestamp
+        shell: bash
+        run: echo "ts=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AuraLab-Windows-Portable
+          name: AuraLab-Windows-${{ steps.timestamp.outputs.ts }}
           path: dist-electron/*.exe
+          retention-days: 7

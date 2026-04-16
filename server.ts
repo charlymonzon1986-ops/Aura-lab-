@@ -248,7 +248,10 @@ async function startServer() {
   app.use(cors());
 
   // Serve WASM files from sql.js
-  const sqlJsDist = path.join(__dirname, 'node_modules', 'sql.js', 'dist');
+  const sqlJsDist = isElectron && isProd 
+    ? path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist')
+    : path.join(__dirname, 'node_modules', 'sql.js', 'dist');
+
   if (fs.existsSync(sqlJsDist)) {
     console.log("✅ Serving sql.js WASM from:", sqlJsDist);
     app.use('/sqljs', express.static(sqlJsDist, {
@@ -576,9 +579,23 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
-  const isProd = process.env.NODE_ENV === "production";
-  const distPath = process.env.FE_DIST_PATH || path.join(process.cwd(), 'dist');
+// Detect if running inside Electron packaged environment
+const isProd = process.env.NODE_ENV === "production";
+const isElectron = !!process.versions.electron;
+
+// Base paths for static files
+let distPath: string;
+if (isElectron && isProd) {
+  // In packaged Electron, __dirname is dist-server/
+  distPath = path.join(__dirname, '..', 'dist');
+} else {
+  distPath = process.env.FE_DIST_PATH || path.join(process.cwd(), 'dist');
+}
+
+console.log(`📂 Static files path determined as: ${distPath}`);
+if (!fs.existsSync(distPath)) {
+  console.warn(`⚠️ Warning: Static path does not exist: ${distPath}`);
+}
 
   if (!isProd) {
     console.log("Starting in DEVELOPMENT mode with Vite middleware");

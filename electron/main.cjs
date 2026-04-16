@@ -1,21 +1,29 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
 const isDev = !app.isPackaged;
 
-// Importar tu servidor Express (ajustado para funcionar dentro de Electron)
-// Nota: Importamos el servidor dinámicamente o lo iniciamos como proceso
+// Global reference to window to avoid garbage collection
+let mainWindow;
+
 function startExpressServer() {
-  // En producción, podrías cargar el server ya compilado o usar ts-node/register
-  // Para simplicidad en el build, asumimos que el server se encarga de servir el frontend
-  process.env.NODE_ENV = isDev ? 'development' : 'production';
-  require('../dist-server/server.cjs'); 
+  try {
+    process.env.NODE_ENV = isDev ? 'development' : 'production';
+    // Load the server. In CJS, this executes the top-level startServer()
+    require('../dist-server/server.cjs');
+  } catch (err) {
+    console.error('Failed to start Express server:', err);
+    if (!isDev) {
+      dialog.showErrorBox('Error de Inicio', 'No se pudo iniciar el servidor interno: ' + err.message);
+    }
+  }
 }
 
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    title: "Aura Lab Desktop",
+async function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    title: "Aura Lab - Laboratorio Fotográfico Pro",
+    show: false, // Don't show until ready
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -24,13 +32,27 @@ function createWindow() {
     icon: path.join(__dirname, '../public/favicon.ico')
   });
 
-  if (isDev) {
-    // En desarrollo usamos el servidor de Vite
-    win.loadURL('http://localhost:3000');
-  } else {
-    // En producción cargamos el servidor local de Express que ya sirve el index.html
-    win.loadURL('http://localhost:3000');
-  }
+  const url = 'http://localhost:3000';
+  
+  // Custom loader logic: try to load until successful or timeout
+  const tryLoad = async (attempts = 0) => {
+    try {
+      await mainWindow.loadURL(url);
+      mainWindow.show();
+    } catch (e) {
+      if (attempts < 20) { // Try for 10 seconds (20 * 500ms)
+        setTimeout(() => tryLoad(attempts + 1), 500);
+      } else {
+        dialog.showErrorBox('Error de Conexión', 'No se pudo conectar con el motor de Aura Lab. Por favor, reinicia la aplicación.');
+      }
+    }
+  };
+
+  tryLoad();
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {
@@ -38,7 +60,7 @@ app.whenReady().then(() => {
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow) createWindow();
   });
 });
 
