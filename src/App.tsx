@@ -104,8 +104,14 @@ const fixImageUrlLocal = (url: string) => {
   return fixImageUrl(url);
 };
 
-// Initialize Gemini AI (Free Tier)
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Safe initialization of Gemini AI
+const getAI = () => {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key || key === "undefined") return null;
+  return new GoogleGenAI({ apiKey: key });
+};
+
+const ai = getAI();
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -960,6 +966,9 @@ export default function App() {
       const base64Content = await base64Promise;
 
       console.log("Sending request to Gemini for Smart Enhance...");
+      if (!ai) {
+        throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
+      }
       const result = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: {
@@ -1165,6 +1174,9 @@ export default function App() {
       Responde ÚNICAMENTE con el JSON.`;
 
       console.log("Sending request to Gemini...");
+      if (!ai) {
+        throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
+      }
       const result = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: {
