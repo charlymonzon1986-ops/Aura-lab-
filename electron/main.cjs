@@ -23,13 +23,29 @@ async function createWindow() {
     width: 1400,
     height: 900,
     title: "Aura Lab - Laboratorio Fotográfico Pro",
-    show: false, // Don't show until ready
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      devTools: true // Asegurar que DevTools esté habilitado
     },
     icon: path.join(__dirname, '../public/favicon.ico')
+  });
+
+  // Habilitar menú básico para poder refrescar y ver consola
+  mainWindow.setMenuBarVisibility(true);
+  
+  // Atajo para abrir consola: Ctrl+Shift+I
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && input.key.toLowerCase() === 'i') {
+      mainWindow.webContents.openDevTools();
+      event.preventDefault();
+    }
+    if (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r')) {
+      mainWindow.reload();
+      event.preventDefault();
+    }
   });
 
   const url = 'http://localhost:3000';
