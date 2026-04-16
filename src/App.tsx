@@ -1,6 +1,2118 @@
 import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { 
+  X,
+  LayoutGrid, 
+  Settings2, 
+  User as UserIcon, 
+  ShieldCheck, 
+  HardDrive, 
+  Zap,
+  Layout,
+  LayoutDashboard,
+  PieChart,
+  Folder as FolderIcon,
+  FolderPlus,
+  FileJson,
+  Plus,
+  HardDrive as HardDriveIcon,
+  Image as ImageIcon, 
+  Sun, 
+  Maximize2, 
+  ZoomIn,
+  ZoomOut,
+  Activity,
+  Sparkles, 
+  RotateCcw, 
+  ChevronLeft, 
+  ChevronRight,
+  Download,
+  Info,
+  Upload,
+  Eye,
+  Split,
+  Crop,
+  MousePointer2,
+  LogOut,
+  Crown,
+  Save,
+  Trash2,
+  Edit2,
+  Lock,
+  CreditCard,
+  CheckCircle2,
+  RotateCw,
+  Trash2 as TrashIcon
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle,
+  DialogDescription,
+  DialogFooter
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
+import { LightingControls } from "@/src/components/LightingControls";
+import { Histogram } from "@/src/components/Histogram";
+import { Filmstrip } from "@/src/components/Filmstrip";
+import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
+import { CropOverlay } from "@/src/components/CropOverlay";
+import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
+import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
+import { useLocalStore, localPathToUrl } from "@/src/hooks/useLocalStore";
+import { Progress } from "@/components/ui/progress";
+import { SYSTEM_PRESETS } from "@/src/constants/presets";
+import { UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder, PLAN_LIMITS } from "@/src/types";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { parseLrtemplate, mergeWithDefaults } from "@/src/lib/lrParser";
+
+const fixImageUrlLocal = (url: string) => {
+  return fixImageUrl(url);
+};
+
+// Initialize Gemini AI (Free Tier)
+const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null
+    };
+  }
+
+  public static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  public componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  public render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6 text-center">
+          <div className="max-w-md space-y-4">
+            <h1 className="text-2xl font-bold text-white uppercase tracking-widest">Algo salió mal</h1>
+            <p className="text-zinc-500 text-sm leading-relaxed">
+              La aplicación encontró un error inesperado al cargar.
+            </p>
+            <div className="p-4 bg-zinc-900 rounded-lg border border-zinc-800 text-left overflow-auto max-h-40">
+              <code className="text-[10px] text-red-400 font-mono">
+                {this.state.error?.toString()}
+              </code>
+            </div>
+            <Button 
+              className="bg-amber-500 hover:bg-amber-600 text-black font-bold text-xs uppercase tracking-widest"
+              onClick={() => window.location.reload()}
+            >
+              Recargar Aplicación
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+export default function App() {
+  // ── Local store (replaces Firebase) ──────────────────────────────
+  const store = useLocalStore();
+  const { photos, presets: userPresets, folders, isReady: isAuthReady, localUser, currentPlan, upgradePlan } = store;
+  const setPhotos = store.setPhotos;
+  const user = localUser;
+  const [userProfile, setUserProfile] = React.useState<UserProfile | null>(null);
+  React.useEffect(() => { if (isAuthReady) setUserProfile({ ...localUser, plan: currentPlan } as any); }, [isAuthReady, localUser, currentPlan]);
+
+  // Límites activos según plan
+  const planLimits = React.useMemo(() => PLAN_LIMITS[currentPlan], [currentPlan]);
+  const [selectedFolderId, setSelectedFolderId] = React.useState<string | null>(null);
+  const [customLogo, setCustomLogo] = React.useState<string | null>(null);
+  const [showPricing, setShowPricing] = React.useState(false);
+  const [showStorageModal, setShowStorageModal] = React.useState(false);
+  const [showCreateFolder, setShowCreateFolder] = React.useState(false);
+  const [newFolderName, setNewFolderName] = React.useState("");
+  const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
+  const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
+  
+  // Reset zoom when photo changes
+  React.useEffect(() => {
+    resetZoom();
+  }, [selectedPhotoId]);
+  const [isAutoEnhancing, setIsAutoEnhancing] = React.useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+  const [photoToDeleteId, setPhotoToDeleteId] = React.useState<string | null>(null);
+  const [isSavingPreset, setIsSavingPreset] = React.useState(false);
+  const [isBulkImportOpen, setIsBulkImportOpen] = React.useState(false);
+  const [bulkImportPlan, setBulkImportPlan] = React.useState<PlanType>("free");
+  const [isImporting, setIsImporting] = React.useState(false);
+  const [newPresetName, setNewPresetName] = React.useState("");
+  const [newPresetIsSystem, setNewPresetIsSystem] = React.useState(false);
+  const [newPresetPlan, setNewPresetPlan] = React.useState<PlanType>("free");
+  const [history, setHistory] = React.useState<Record<string, LightingSettings[]>>({});
+  const [totalStorageUsed, setTotalStorageUsed] = React.useState(0);
+
+  // Calculate total storage
+  React.useEffect(() => {
+    const total = photos.reduce((acc, p) => acc + (p.size || 0), 0);
+    setTotalStorageUsed(total);
+    if (userProfile) setUserProfile(prev => prev ? { ...prev, storageUsed: total } : prev);
+  }, [photos]);
+  const [isUploading, setIsUploading] = React.useState(false);
+  const [zoom, setZoom] = React.useState(1);
+  const [pan, setPan] = React.useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = React.useState(false);
+  const [dragStart, setDragStart] = React.useState({ x: 0, y: 0 });
+  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor'>('dashboard');
+  const [showControls, setShowControls] = React.useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+  const [isComparing, setIsComparing] = React.useState(false);
+  const [compareValue, setCompareValue] = React.useState(50);
+  const [isCropping, setIsCropping] = React.useState(false);
+  const [isAnalyzing, setIsAnalyzing] = React.useState(false);
+  const imageRef = React.useRef<HTMLImageElement>(null);
+  const [isPressing, setIsPressing] = React.useState(false);
+  const [newPhotoUrl, setNewPhotoUrl] = React.useState("");
+  const galleryRef = React.useRef<HTMLDivElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const scrollToGallery = () => {
+    galleryRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleLogin = () => {
+    toast.success("Bienvenido a Aura Lab Desktop");
+  };
+
+
+  const addPhoto = async (url: string, title: string = "Nueva Foto", size: number = 0, _storagePath?: string, _thumbnailUrl?: string) => {
+    return await store.addPhotoFromUrl(url, title, size);
+  };
+
+  const [uploadProgress, setUploadProgress] = React.useState<number>(0);
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const isRaw = /\.(arw|cr2|nef|dng|orf|raf)$/i.test(file.name);
+    const isImage = /\.(jpg|jpeg|png|webp)$/i.test(file.name);
+    if (!isRaw && !isImage) {
+      toast.error("Formato no soportado. Usa JPG, PNG o RAW (ARW, CR2, etc.)");
+      return;
+    }
+    // Restricción: RAW solo en Pro/Studio
+    if (isRaw && !planLimits.rawSupport) {
+      toast.error("Los archivos RAW requieren el plan Pro o Studio", { description: "Actualiza tu plan para importar ARW, CR2, NEF, DNG y más." });
+      setShowPricing(true);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    // Restricción: límite de fotos
+    if (planLimits.maxPhotos !== -1 && photos.length >= planLimits.maxPhotos) {
+      toast.error(`Límite de ${planLimits.maxPhotos} fotos alcanzado en el plan Free`, { description: "Actualiza a Pro para hasta 200 fotos." });
+      setShowPricing(true);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setIsUploading(true);
+    setUploadProgress(30);
+    try {
+      const photo = await store.addPhotoFromFile(file);
+      setUploadProgress(100);
+      if (photo) {
+        toast.success("Foto añadida correctamente");
+        setActiveTab('gallery');
+      }
+    } catch (err) {
+      toast.error("Error al guardar la foto");
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleElectronOpen = async () => {
+    // Restricción: importación múltiple solo en Pro/Studio
+    if (!planLimits.batchImport) {
+      toast.error("La importación múltiple requiere el plan Pro o Studio");
+      setShowPricing(true);
+      return;
+    }
+    const paths = await window.electronAPI!.dialog.openFile();
+    if (!paths || paths.length === 0) return;
+    // Verificar límite de fotos
+    if (planLimits.maxPhotos !== -1 && photos.length + paths.length > planLimits.maxPhotos) {
+      toast.error(`Importar ${paths.length} fotos superaría el límite de ${planLimits.maxPhotos} del plan ${currentPlan}`);
+      return;
+    }
+    setIsUploading(true);
+    setUploadProgress(10);
+    let added = 0;
+    for (const p of paths) {
+      try {
+        const resp = await fetch(`auralab://local/${encodeURIComponent(p.replace(/\\/g, '/'))}`);
+        const buf = await resp.arrayBuffer();
+        const name = p.split(/[\/]/).pop() || 'photo.jpg';
+        const file = new File([buf], name);
+        await store.addPhotoFromFile(file);
+        added++;
+        setUploadProgress(10 + Math.round((added / paths.length) * 80));
+      } catch {}
+    }
+    setIsUploading(false);
+    setUploadProgress(0);
+    if (added > 0) { toast.success(`${added} foto${added !== 1 ? 's' : ''} añadida${added !== 1 ? 's' : ''}`); setActiveTab('gallery'); }
+  };
+
+  const filteredPhotos = React.useMemo(() => {
+    if (!selectedFolderId) return photos;
+    return photos.filter(p => p.folderId === selectedFolderId);
+  }, [photos, selectedFolderId]);
+
+  const selectedPhoto = React.useMemo(() => 
+    photos.find(p => p.id === selectedPhotoId),
+    [photos, selectedPhotoId]
+  );
+
+  const updatePhotoSettings = React.useCallback((id: string, updates: Partial<LightingSettings>) => {
+    setPhotos(prev => {
+      const photo = prev.find(p => p.id === id);
+      if (!photo) return prev;
+      
+      const newSettings = { ...photo.settings, ...updates };
+      
+      // Update history
+      setHistory(hPrev => {
+        const photoHistory = hPrev[id] || [];
+        const lastSettings = photoHistory[photoHistory.length - 1];
+        if (JSON.stringify(lastSettings) === JSON.stringify(newSettings)) return hPrev;
+        return {
+          ...hPrev,
+          [id]: [...photoHistory, newSettings].slice(-20)
+        };
+      });
+
+      return prev.map(p => p.id === id ? { ...p, settings: newSettings } : p);
+    });
+  }, []);
+
+  // Debounced local DB sync
+  React.useEffect(() => {
+    if (!selectedPhotoId) return;
+    const photo = photos.find(p => p.id === selectedPhotoId);
+    if (!photo) return;
+    const timer = setTimeout(() => {
+      store.persistPhotoSettings(selectedPhotoId, photo.settings);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [photos, selectedPhotoId]);
+
+  const resetZoom = () => {
+    setZoom(0.8);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const imageStageRef = React.useRef<HTMLDivElement>(null);
+
+  // Pan con mouse — funciona en cualquier nivel de zoom
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    setPan({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  // Zoom con rueda del mouse apuntando al cursor — igual que Lightroom
+  const handleWheel = React.useCallback((e: WheelEvent) => {
+    e.preventDefault();
+    const stage = imageStageRef.current;
+    if (!stage) return;
+
+    const rect = stage.getBoundingClientRect();
+    const cursorX = e.clientX - rect.left - rect.width / 2;
+    const cursorY = e.clientY - rect.top - rect.height / 2;
+
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+
+    setZoom(prevZoom => {
+      const newZoom = Math.min(Math.max(prevZoom * zoomFactor, 0.1), 10);
+      const scale = newZoom / prevZoom;
+      setPan(prevPan => ({
+        x: cursorX - scale * (cursorX - prevPan.x),
+        y: cursorY - scale * (cursorY - prevPan.y)
+      }));
+      return newZoom;
+    });
+  }, []);
+
+  // Attach wheel con passive:false para poder hacer preventDefault
+  React.useEffect(() => {
+    const stage = imageStageRef.current;
+    if (!stage) return;
+    stage.addEventListener('wheel', handleWheel, { passive: false });
+    return () => stage.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
+  // Performance optimization: Update CSS variables for filters
+  React.useEffect(() => {
+    if (!selectedPhoto) return;
+    const s = selectedPhoto.settings;
+    const root = document.documentElement;
+    
+    // Advanced math for accurate rendering (matching getFilterString)
+    const whiteAdj = (s.whites - 100) / 2;
+    const blackAdj = (s.blacks - 100) / 2;
+    const effectiveBrightness = s.brightness + (s.exposure * 20) + whiteAdj + blackAdj;
+    
+    // Dehaze simulation
+    const dehazeContrast = s.dehaze * 0.5;
+    const dehazeBrightness = s.dehaze * -0.2;
+    
+    const highAdj = (s.highlights - 100) / 4;
+    const shadAdj = (s.shadows - 100) / 4;
+    
+    // Texture and Clarity
+    const textureAdj = s.texture / 4;
+    const clarityAdj = s.clarity / 2;
+    
+    const effectiveContrast = s.contrast + clarityAdj + textureAdj + dehazeContrast + highAdj - shadAdj;
+    const finalBrightness = effectiveBrightness + dehazeBrightness;
+
+    root.style.setProperty('--img-brightness', `${finalBrightness}%`);
+    root.style.setProperty('--img-contrast', `${effectiveContrast}%`);
+    
+    // Vibrance and Dehaze saturate
+    const dehazeSaturate = s.dehaze * 0.2;
+    const effectiveSaturation = (s.saturation * (s.vibrance / 100)) + dehazeSaturate;
+    root.style.setProperty('--img-saturate', `${effectiveSaturation}%`);
+    
+    // Warmth logic: positive = sepia, negative = blue hue-rotate
+    const sepiaVal = s.warmth > 0 ? s.warmth / 2 : 0;
+    const warmthHue = s.warmth < 0 ? s.warmth / 2 : 0;
+    const tintHue = s.tint / 2;
+    
+    root.style.setProperty('--img-sepia', `${sepiaVal}%`);
+    root.style.setProperty('--img-hue', `${warmthHue + tintHue}deg`);
+    root.style.setProperty('--img-exposure', `1`); // Exposure is now baked into brightness
+    root.style.setProperty('--img-vignette', `${s.vignette / 100}`);
+    root.style.setProperty('--img-rotate', `${s.rotation}deg`);
+    root.style.setProperty('--img-flip-x', s.flipX ? '-1' : '1');
+    root.style.setProperty('--img-flip-y', s.flipY ? '-1' : '1');
+    root.style.setProperty('--img-sepia-val', `${s.sepia}%`);
+    
+    // Noise Reduction + Blur
+    const nrBlur = s.noiseReduction / 50;
+    root.style.setProperty('--img-blur', `${s.blur + nrBlur}px`);
+    
+    // Sharpening (handled via SVG filter)
+    root.style.setProperty('--img-sharpen', `${(s.sharpening + s.focus) / 100}`);
+    root.style.setProperty('--img-crop-top', `${s.cropTop}%`);
+    root.style.setProperty('--img-crop-right', `${s.cropRight}%`);
+    root.style.setProperty('--img-crop-bottom', `${s.cropBottom}%`);
+    root.style.setProperty('--img-crop-left', `${s.cropLeft}%`);
+  }, [selectedPhoto?.settings]);
+  const deletePhoto = async (id: string) => {
+    try {
+      await store.deletePhoto(id);
+      setSelectedPhotoId(null);
+      toast.success("Foto eliminada");
+    } catch (err) {
+      toast.error("Error al eliminar la foto");
+    }
+  };
+
+  const saveCurrentAsPreset = () => {
+    if (!user || !selectedPhoto) return;
+    setNewPresetName("");
+    setNewPresetIsSystem(false);
+    setNewPresetPlan("free");
+    setIsSavingPreset(true);
+  };
+
+  const confirmSavePreset = async () => {
+    if (!selectedPhoto || !newPresetName) {
+      toast.error("Por favor, ingresa un nombre para el preset");
+      return;
+    }
+    // Contar presets personales del usuario (no del sistema)
+    const userPresetCount = userPresets.filter(p => !p.isSystem).length;
+    if (planLimits.maxPresets !== -1 && userPresetCount >= planLimits.maxPresets) {
+      toast.error(`Límite de ${planLimits.maxPresets} presets alcanzado en el plan ${currentPlan}`, { description: "Actualiza tu plan para guardar más presets." });
+      setIsSavingPreset(false);
+      setShowPricing(true);
+      return;
+    }
+    try {
+      await store.addPreset({
+        name: newPresetName,
+        category: newPresetIsSystem ? "Sistema" : "Mis Presets",
+        settings: selectedPhoto.settings,
+        isSystem: newPresetIsSystem,
+        planRequired: newPresetIsSystem ? newPresetPlan : 'free',
+        userId: 'local-user',
+      });
+      toast.success(newPresetIsSystem ? "Preset del sistema guardado" : "Preset personal guardado");
+      setIsSavingPreset(false);
+      setNewPresetName("");
+    } catch (error) {
+      toast.error("Error al guardar el preset");
+    }
+  };
+
+  const handleBulkImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+    if (!planLimits.lrImport) {
+      toast.error("La importación de presets .lrtemplate requiere el plan Pro o Studio");
+      setShowPricing(true);
+      return;
+    }
+    setIsImporting(true);
+    let importedCount = 0;
+    const toastId = toast.loading(`Importando ${files.length} presets...`);
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file.name.toLowerCase().endsWith('.lrtemplate')) continue;
+        toast.loading(`Importando ${i + 1}/${files.length}: ${file.name}`, { id: toastId });
+        const pathParts = file.webkitRelativePath.split('/');
+        const category = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "General";
+        const name = file.name.replace(/\.lrtemplate$/i, '');
+        try {
+          const fileContent = await file.text();
+          const partialSettings = parseLrtemplate(fileContent);
+          const settings = mergeWithDefaults(partialSettings);
+          await store.addPreset({ name, category, settings, isSystem: true, planRequired: bulkImportPlan, userId: 'local-user' });
+          importedCount++;
+        } catch {}
+      }
+      toast.success(`${importedCount} presets importados`, { id: toastId });
+    } finally {
+      setIsImporting(false);
+      setIsBulkImportOpen(false);
+    }
+  };
+
+  const smartEnhance = async (id: string, openEditor = false) => {
+    if (!planLimits.aiEnhance) {
+      toast.error("Smart Enhance requiere el plan Pro o Studio", { description: "Actualiza tu plan para usar mejora automática por IA." });
+      setShowPricing(true);
+      return;
+    }
+    const photo = photos.find(p => p.id === id);
+    if (!photo) return;
+    setIsAutoEnhancing(true);
+    if (openEditor) setSelectedPhotoId(id);
+    try {
+      toast.loading("Analizando imagen con IA...", { id: "ai-enhance" });
+      let blob: Blob;
+      const localPath = (photo as any).localPath;
+      if (localPath && window.electronAPI) {
+        const b64 = await window.electronAPI.file.readPhoto(localPath);
+        if (b64) {
+          const bytes = atob(b64);
+          const arr = new Uint8Array(bytes.length);
+          for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+          blob = new Blob([arr], { type: 'image/jpeg' });
+        } else { blob = await (await fetch(photo.url)).blob(); }
+      } else { blob = await (await fetch(photo.url)).blob(); }
+      const reader = new FileReader();
+      const base64Data = await new Promise<string>((resolve) => { reader.onloadend = () => resolve(reader.result as string); reader.readAsDataURL(blob); });
+      const base64Content = base64Data.split(',')[1];
+      const result = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{ role: "user", parts: [
+          { text: `Analiza esta fotografía y devuelve ajustes de revelado ideales en JSON con estos campos numéricos: brightness (80-120), contrast (90-130), saturation (90-120), exposure (-1 a 1), warmth (90-110), tint (95-105), vibrance (100-130), clarity (0-30), highlights (80-120), shadows (80-120), whites (90-110), blacks (90-110). Solo JSON, sin texto extra.` },
+          { inlineData: { mimeType: blob.type || "image/jpeg", data: base64Content } }
+        ]}],
+        config: { responseMimeType: "application/json" }
+      });
+      const aiResponse = JSON.parse(result.text);
+      if (aiResponse.warmth !== undefined) aiResponse.warmth = aiResponse.warmth - 100;
+      if (aiResponse.tint !== undefined) aiResponse.tint = aiResponse.tint - 100;
+      updatePhotoSettings(id, { ...DEFAULT_SETTINGS, ...aiResponse });
+      toast.success("Iluminación optimizada por IA", { id: "ai-enhance" });
+    } catch (error) {
+      console.error("AI Enhance error:", error);
+      toast.error("Error al usar la IA. Usando mejora básica.", { id: "ai-enhance" });
+      updatePhotoSettings(id, { ...DEFAULT_SETTINGS, brightness: 115, contrast: 110, saturation: 105, exposure: 10, clarity: 15 });
+    } finally {
+      setIsAutoEnhancing(false);
+    }
+  };
+
+  const navigatePhoto = (direction: 'prev' | 'next') => {
+    const currentIndex = photos.findIndex(p => p.id === selectedPhotoId);
+    let nextIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
+    
+    if (nextIndex >= photos.length) nextIndex = 0;
+    if (nextIndex < 0) nextIndex = photos.length - 1;
+    
+    setSelectedPhotoId(photos[nextIndex].id);
+  };
+
+  const updatePhotoTitle = async (id: string, newTitle: string) => {
+    setPhotos(prev => prev.map(p => p.id === id ? { ...p, title: newTitle } : p));
+    try {
+      await updateDoc(doc(db, "photos", id), { title: newTitle });
+    } catch (error) {
+      console.error("Error updating title:", error);
+      toast.error("Error al actualizar el nombre");
+    }
+  };
+
+  const [isExportModalOpen, setIsExportModalOpen] = React.useState(false);
+  const [exportSettings, setExportSettings] = React.useState({
+    format: 'image/jpeg' as 'image/jpeg' | 'image/png' | 'image/webp',
+    quality: 0.9,
+    scale: 1
+  });
+
+  const downloadImage = async (settings: ExportSettings) => {
+    if (!selectedPhoto) return;
+    
+    const canvas = document.createElement('canvas');
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    
+    toast.promise(new Promise(async (resolve, reject) => {
+      img.onload = () => {
+        const s = selectedPhoto.settings;
+        
+        // Calculate dimensions based on scale and rotation
+        const isRotated = (s.rotation / 90) % 2 !== 0;
+        const baseWidth = isRotated ? img.height : img.width;
+        const baseHeight = isRotated ? img.width : img.height;
+        
+        canvas.width = baseWidth * settings.scale;
+        canvas.height = baseHeight * settings.scale;
+        
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject();
+          return;
+        }
+
+        ctx.scale(settings.scale, settings.scale);
+        
+        // Apply transformations (Rotation & Flips)
+        ctx.translate(baseWidth / 2, baseHeight / 2);
+        ctx.rotate((s.rotation * Math.PI) / 180);
+        ctx.scale(s.flipX ? -1 : 1, s.flipY ? -1 : 1);
+        ctx.translate(-img.width / 2, -img.height / 2);
+        
+        // Apply filters to canvas
+        ctx.filter = getFilterString(s);
+        
+        ctx.drawImage(img, 0, 0);
+
+        // Apply Color Balance Overlays
+        if (s.shadowTint !== "transparent" || s.midtoneTint !== "transparent" || s.highlightTint !== "transparent") {
+          // We need to apply overlays in the same coordinate system
+          // But since we want them to cover the whole canvas, we might need to reset transform or use a specific approach
+          // For simplicity, we'll apply them over the drawn image
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset to canvas space
+          ctx.scale(settings.scale, settings.scale);
+
+          if (s.shadowTint !== "transparent") {
+            ctx.globalCompositeOperation = 'soft-light';
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = s.shadowTint;
+            ctx.fillRect(0, 0, baseWidth, baseHeight);
+          }
+          if (s.midtoneTint !== "transparent") {
+            ctx.globalCompositeOperation = 'overlay';
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = s.midtoneTint;
+            ctx.fillRect(0, 0, baseWidth, baseHeight);
+          }
+          if (s.highlightTint !== "transparent") {
+            ctx.globalCompositeOperation = 'color';
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = s.highlightTint;
+            ctx.fillRect(0, 0, baseWidth, baseHeight);
+          }
+          ctx.restore();
+        }
+        
+        // Reset composite
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1.0;
+        
+        const extension = settings.format.split('/')[1];
+        const link = document.createElement('a');
+        link.download = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.${extension}`;
+        link.href = canvas.toDataURL(settings.format, settings.quality);
+        link.click();
+        resolve(true);
+      };
+      img.onerror = reject;
+      img.src = selectedPhoto.url;
+    }), {
+      loading: 'Preparando descarga...',
+      success: 'Imagen descargada con éxito',
+      error: 'Error al descargar la imagen. Intenta con otra foto.'
+    });
+  };
+
+  const handleUrlAdd = () => {
+    if (!newPhotoUrl.trim()) return;
+    try {
+      addPhoto(newPhotoUrl.trim(), "Foto desde URL", 0);
+      setNewPhotoUrl("");
+    } catch { toast.error("Error al procesar la URL"); }
+  };
+
+  const handleUpgrade = async (plan: PlanType) => {
+    if (plan === currentPlan) return;
+    setIsProcessingPayment(true);
+    try {
+      await upgradePlan(plan);
+      setUserProfile(prev => prev ? { ...prev, plan } : prev);
+      if (plan === 'free') {
+        toast.success("Plan cambiado a Free");
+      } else {
+        toast.success(`¡Bienvenido al plan ${plan === 'pro' ? 'Pro' : 'Studio'}!`);
+      }
+    } catch {
+      toast.error("Error al cambiar el plan");
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const applyPreset = (preset: Preset) => {
+    if (!selectedPhoto) return;
+    updatePhotoSettings(selectedPhoto.id, preset.settings);
+    toast.success(`Preset "${preset.name}" aplicado`);
+  };
+
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30 flex overflow-hidden relative">
+      {/* Sidebar Backdrop (Mobile) */}
+      {/* SVG Filters for Advanced Processing */}
+      <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}>
+        <filter id="sharpen-filter">
+          <feConvolveMatrix 
+            order="3" 
+            preserveAlpha="true" 
+            kernelMatrix="0 -1 0 -1 5 -1 0 -1 0" 
+            divisor="1"
+          />
+        </filter>
+      </svg>
+
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar Navigation */}
+      <motion.aside 
+        initial={false}
+        animate={{ 
+          width: isSidebarOpen ? 260 : 0,
+          opacity: isSidebarOpen ? 1 : 0,
+          x: isSidebarOpen ? 0 : -20
+        }}
+        transition={{ type: "spring", damping: 25, stiffness: 200 }}
+        className="h-screen bg-zinc-950 border-r border-zinc-900 flex flex-col z-50 fixed lg:relative shrink-0 overflow-hidden shadow-2xl lg:shadow-none"
+      >
+        {/* Sidebar Header */}
+        <div className="h-16 flex items-center px-4 border-b border-zinc-900 justify-between shrink-0">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-8 h-8 bg-gradient-to-br from-amber-500 to-yellow-600 rounded-lg flex items-center justify-center shadow-lg shadow-amber-500/20 overflow-hidden shrink-0">
+              {userProfile?.plan === 'studio' && customLogo ? (
+                <img src={customLogo} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              ) : (
+                <Sun className="w-5 h-5 text-white" />
+              )}
+            </div>
+            <h1 className="text-sm font-bold tracking-tight text-white truncate">
+              {userProfile?.plan === 'studio' && userProfile.displayName ? `${userProfile.displayName} Lab` : 'Aura Lab'}
+            </h1>
+          </div>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="h-8 w-8 text-zinc-600 hover:text-white"
+            onClick={() => setIsSidebarOpen(false)}
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {/* Sidebar Content */}
+        <div className="flex-1 py-6 px-3 space-y-2 overflow-y-auto overflow-x-hidden">
+          <Button 
+            variant="ghost" 
+            className={`w-full justify-start h-11 px-3 ${activeTab === 'dashboard' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+            onClick={() => setActiveTab('dashboard')}
+          >
+            <LayoutDashboard className={`w-5 h-5 shrink-0 ${activeTab === 'dashboard' ? 'text-amber-500' : ''}`} />
+            {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Dashboard</span>}
+          </Button>
+
+          <Button 
+            variant="ghost" 
+            className={`w-full justify-start h-11 px-3 ${activeTab === 'gallery' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+            onClick={() => setActiveTab('gallery')}
+          >
+            <ImageIcon className={`w-5 h-5 shrink-0 ${activeTab === 'gallery' ? 'text-amber-500' : ''}`} />
+            {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Galería</span>}
+          </Button>
+          
+          <Button 
+            variant="ghost" 
+            className={`w-full justify-start h-11 px-3 ${activeTab === 'editor' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+            onClick={() => setActiveTab('editor')}
+          >
+            <Settings2 className={`w-5 h-5 shrink-0 ${activeTab === 'editor' ? 'text-amber-500' : ''}`} />
+            {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Editor</span>}
+          </Button>
+
+          {userProfile?.role === 'admin' && (
+            <Button 
+              variant="ghost" 
+              className={`w-full justify-start h-11 px-3 ${isBulkImportOpen ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+              onClick={() => setIsBulkImportOpen(true)}
+            >
+              <ShieldCheck className={`w-5 h-5 shrink-0 ${isBulkImportOpen ? 'text-amber-500' : ''}`} />
+              {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Admin Presets</span>}
+            </Button>
+          )}
+
+          <div className="pt-4 pb-2">
+            <div className={`h-px bg-zinc-900 mx-2 ${isSidebarOpen ? 'mb-4' : 'mb-2'}`} />
+            {isSidebarOpen && <p className="px-3 text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-2">Suscripción</p>}
+          </div>
+
+          <Button 
+            variant="ghost" 
+            className="w-full justify-start h-11 px-3 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50"
+            onClick={() => setShowPricing(true)}
+          >
+            <Zap className="w-5 h-5 shrink-0 text-purple-500" />
+            {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Planes</span>}
+          </Button>
+        </div>
+
+        {/* Sidebar Footer */}
+        <div className="p-3 border-t border-zinc-900 space-y-2">
+          {user ? (
+            <div className={`flex items-center gap-3 p-2 rounded-lg bg-zinc-900/30 border border-zinc-900/50 ${!isSidebarOpen ? 'justify-center' : ''}`}>
+              <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center shrink-0 overflow-hidden">
+                {user.photoURL ? (
+                  <img src={user.photoURL} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <UserIcon className="w-4 h-4 text-zinc-500" />
+                )}
+              </div>
+              {isSidebarOpen && (
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] font-bold text-white truncate">{user.displayName}</p>
+                  <p className="text-[9px] text-zinc-500 uppercase tracking-tighter">Plan {userProfile?.plan || 'Free'}</p>
+                </div>
+              )}
+              {isSidebarOpen && (
+                <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-red-400" onClick={() => logout()}>
+                  <LogOut className="w-3 h-3" />
+                </Button>
+              )}
+            </div>
+          ) : (
+            <Button 
+              className="w-full bg-white text-black hover:bg-zinc-200 h-10 px-0"
+              onClick={handleLogin}
+            >
+              <UserIcon className="w-4 h-4" />
+              {isSidebarOpen && <span className="ml-2 text-[10px] font-bold uppercase">Entrar</span>}
+            </Button>
+          )}
+          
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="w-full h-8 text-zinc-600 hover:text-zinc-400"
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          >
+            {isSidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </Button>
+        </div>
+      </motion.aside>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
+        {/* Top Header (Minimal) */}
+        <header className="h-16 border-b border-zinc-900 flex items-center justify-between px-4 md:px-8 bg-zinc-950/50 backdrop-blur-sm shrink-0">
+          <div className="flex items-center gap-2 md:gap-4">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="h-9 w-9 text-zinc-500 hover:text-white lg:hidden"
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            >
+              <Layout className="w-5 h-5" />
+            </Button>
+            <h2 className="text-[10px] md:text-sm font-bold uppercase tracking-[0.1em] md:tracking-[0.3em] text-zinc-500 truncate max-w-[150px] md:max-w-none">
+              {activeTab === 'gallery' ? 'Galería de Proyectos' : 'Laboratorio de Edición'}
+            </h2>
+          </div>
+          
+          <div className="flex items-center gap-2 md:gap-4">
+            <Badge variant="outline" className="bg-zinc-900 border-zinc-800 text-zinc-500 font-mono text-[8px] md:text-[9px] px-1 md:px-2">
+              v1.2.0
+            </Badge>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto bg-zinc-950">
+          <main className="container mx-auto px-4 md:px-8 py-8 md:py-12">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+              >
+                {activeTab === 'dashboard' ? (
+                  <div className="space-y-12">
+                    {!user ? (
+                      /* Landing Page for non-logged users */
+                      <div className="max-w-4xl mx-auto text-center space-y-8 py-12">
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-bold uppercase tracking-widest"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          Tecnología Aura v1.2
+                        </motion.div>
+                        <h2 className="text-5xl md:text-7xl font-light tracking-tight text-white leading-tight">
+                          La luz perfecta para cada <span className="text-amber-500 italic font-medium">fotografía</span>.
+                        </h2>
+                        <p className="text-zinc-400 text-lg max-w-2xl mx-auto leading-relaxed">
+                          Aura Lab es el laboratorio digital definitivo para fotógrafos. Ajusta la iluminación, recupera sombras y realza detalles con precisión profesional.
+                        </p>
+                        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+                          <Button 
+                            size="lg" 
+                            className="bg-white text-black hover:bg-zinc-200 h-14 px-8 text-sm font-bold uppercase tracking-wider"
+                            onClick={handleLogin}
+                          >
+                            Empezar Gratis
+                          </Button>
+                          <Button 
+                            size="lg" 
+                            variant="outline" 
+                            className="border-zinc-800 text-zinc-400 hover:bg-zinc-900 h-14 px-8 text-sm font-bold uppercase tracking-wider"
+                            onClick={() => setShowPricing(true)}
+                          >
+                            Ver Planes
+                          </Button>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 pt-12">
+                          {[
+                            { icon: Sun, title: "Luz Natural", desc: "Algoritmos que respetan la física de la luz." },
+                            { icon: Zap, title: "Procesado Rápido", desc: "Resultados instantáneos en alta resolución." },
+                            { icon: ShieldCheck, title: "Galería Privada", desc: "Tus proyectos seguros y siempre disponibles." }
+                          ].map((feature, i) => (
+                            <div key={i} className="p-6 rounded-2xl bg-zinc-900/30 border border-zinc-900 space-y-3">
+                              <feature.icon className="w-6 h-6 text-amber-500 mx-auto" />
+                              <h4 className="text-white font-bold text-sm uppercase tracking-wider">{feature.title}</h4>
+                              <p className="text-zinc-500 text-xs leading-relaxed">{feature.desc}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      /* Dashboard for logged users */
+                      <div className="space-y-12">
+                        {/* Dashboard Stats */}
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <Card 
+                            className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                            onClick={() => setActiveTab('gallery')}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                                <ImageIcon className="w-5 h-5 text-amber-500" />
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Total Fotos</p>
+                                <p className="text-xl font-bold text-white">{photos.length}</p>
+                                <p className="text-[8px] text-amber-500/70 font-bold uppercase mt-1">Entrar a Galería →</p>
+                              </div>
+                            </div>
+                          </Card>
+                          <Card 
+                            className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                            onClick={() => setShowStorageModal(true)}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                                <HardDrive className="w-5 h-5 text-blue-500" />
+                              </div>
+                              <div className="flex-1">
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Espacio</p>
+                                <div className="flex items-end justify-between">
+                                  <p className="text-xl font-bold text-white">{Number(totalStorageUsed / (1024 * 1024)).toFixed(1)}MB</p>
+                                  <p className="text-[9px] text-zinc-500 mb-1">de {userProfile?.plan === 'studio' ? '1TB' : userProfile?.plan === 'pro' ? '50GB' : '2GB'}</p>
+                                </div>
+                                <div className="mt-2 h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-blue-500 transition-all duration-500" 
+                                    style={{ 
+                                      width: `${Math.min(100, (totalStorageUsed / ( (userProfile?.plan === 'studio' ? 1024 : userProfile?.plan === 'pro' ? 50 : 2) * 1024 * 1024 * 1024)) * 100)}%` 
+                                    }} 
+                                  />
+                                </div>
+                                <p className="text-[8px] text-blue-500/70 font-bold uppercase mt-1">Ver Almacenamiento →</p>
+                              </div>
+                            </div>
+                          </Card>
+                          <Card 
+                            className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                            onClick={() => setShowPricing(true)}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
+                                <Zap className="w-5 h-5 text-purple-500" />
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Plan Activo</p>
+                                <p className="text-xl font-bold text-white uppercase">{userProfile?.plan || 'Free'}</p>
+                                <p className="text-[8px] text-purple-500/70 font-bold uppercase mt-1">Ver Planes →</p>
+                              </div>
+                            </div>
+                          </Card>
+                          <Card className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]" onClick={() => setShowPricing(true)}>
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">
+                                <ShieldCheck className="w-5 h-5 text-green-500" />
+                              </div>
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Suscripción</p>
+                                <p className="text-xs font-medium text-green-500">Gestionar Plan →</p>
+                              </div>
+                            </div>
+                          </Card>
+                        </div>
+
+                        {/* Upload Section */}
+                        <div className="bg-zinc-900/30 border border-zinc-800 rounded-2xl p-12 text-center space-y-6">
+                          <div className="space-y-2">
+                            <h3 className="text-2xl font-bold text-white">Tu Laboratorio de Luz</h3>
+                            <p className="text-zinc-400 text-sm max-w-md mx-auto">
+                              Sube tus fotografías para empezar a ajustar la iluminación con tecnología Aura.
+                            </p>
+                          </div>
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-lg mx-auto">
+                            <input 
+                              type="text" 
+                              placeholder="Pega el enlace de tu foto aquí..." 
+                              className="flex-1 w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-amber-500 transition-colors"
+                              value={newPhotoUrl}
+                              onChange={(e) => setNewPhotoUrl(e.target.value)}
+                            />
+                            <Button onClick={handleUrlAdd} className="w-full sm:w-auto bg-amber-600 hover:bg-amber-500 text-white h-11 px-6">
+                              <Plus className="w-4 h-4 mr-2" />
+                              Añadir Foto
+                            </Button>
+                          </div>
+                          <div className="flex items-center justify-center gap-4 text-[10px] text-zinc-600 font-bold uppercase tracking-widest">
+                            <span>O</span>
+                            <div className="h-px w-8 bg-zinc-800" />
+                            <button 
+                              onClick={() => fileInputRef.current?.click()}
+                              className="text-amber-500 hover:text-amber-400 transition-colors"
+                            >
+                              Subir archivo local
+                            </button>
+                            <input type="file" ref={fileInputRef} className="hidden" accept="image/*,.arw,.cr2,.nef,.dng,.orf,.raf" onChange={handleFileUpload} />
+                          </div>
+
+                          {isUploading && (
+                            <div className="max-w-md mx-auto space-y-2 pt-4">
+                              <div className="flex items-center justify-between text-[10px] uppercase font-bold text-amber-500">
+                                <span className="flex items-center gap-2">
+                                  <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }}>
+                                    <RotateCcw className="w-3 h-3" />
+                                  </motion.div>
+                                  {uploadProgress < 100 ? "Subiendo archivo..." : "Procesando imagen..."}
+                                </span>
+                                <span>{Math.round(uploadProgress)}%</span>
+                              </div>
+                              <Progress value={uploadProgress} className="h-1 bg-zinc-800" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : activeTab === 'gallery' ? (
+                  /* Gallery View */
+                  <div className="space-y-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <h3 className="text-2xl font-bold text-white">Tu Galería</h3>
+                        <p className="text-zinc-500 text-sm">Gestiona y edita tus capturas.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="cursor-pointer">
+                          <Button variant="outline" className="border-zinc-800 text-zinc-400 hover:bg-zinc-900">
+                            <FileJson className="w-4 h-4 mr-2" />
+                            Importar Lightroom
+                          </Button>
+                          <input type="file" className="hidden" accept=".lrcat" onChange={handleLightroomImport} />
+                        </label>
+                        <Button 
+                          variant="outline" 
+                          className="border-zinc-800 text-zinc-400 hover:bg-zinc-900"
+                          onClick={() => setActiveTab('dashboard')}
+                        >
+                          <LayoutDashboard className="w-4 h-4 mr-2" />
+                          Dashboard
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Folders Bar */}
+                    <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                      <Button
+                        variant={selectedFolderId === null ? "default" : "outline"}
+                        size="sm"
+                        className={`rounded-full px-6 ${selectedFolderId === null ? 'bg-amber-600 hover:bg-amber-500' : 'border-zinc-800 text-zinc-400'}`}
+                        onClick={() => setSelectedFolderId(null)}
+                      >
+                        Todas
+                      </Button>
+                      {folders.map(folder => (
+                        <Button
+                          key={folder.id}
+                          variant={selectedFolderId === folder.id ? "default" : "outline"}
+                          size="sm"
+                          className={`rounded-full px-6 ${selectedFolderId === folder.id ? 'bg-amber-600 hover:bg-amber-500' : 'border-zinc-800 text-zinc-400'}`}
+                          onClick={() => setSelectedFolderId(folder.id)}
+                        >
+                          <FolderIcon className="w-3.5 h-3.5 mr-2" />
+                          {folder.name}
+                        </Button>
+                      ))}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="rounded-full px-4 text-zinc-500 hover:text-amber-500 hover:bg-amber-500/10"
+                        onClick={() => {
+                          if (planLimits.maxFolders === 0) {
+                            toast.error("Las carpetas requieren el plan Pro o Studio");
+                            setShowPricing(true);
+                            return;
+                          }
+                          if (planLimits.maxFolders !== -1 && folders.length >= planLimits.maxFolders) {
+                            toast.error(`Límite de ${planLimits.maxFolders} carpetas alcanzado`, { description: "Actualiza a Studio para carpetas ilimitadas." });
+                            setShowPricing(true);
+                            return;
+                          }
+                          setShowCreateFolder(true);
+                        }}
+                      >
+                        <FolderPlus className="w-4 h-4 mr-2" />
+                        Nueva Carpeta
+                      </Button>
+                    </div>
+
+                    {/* Gallery Grid */}
+                    <div className="space-y-6">
+                      {filteredPhotos.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                          {filteredPhotos.map((photo) => (
+                            <motion.div
+                              key={photo.id}
+                              layoutId={photo.id}
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-amber-500/50 transition-all shadow-2xl"
+                            >
+                              <div className="w-full h-full relative">
+                                {(photo.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url) ? (
+                                  <img 
+                                    src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
+                                    alt={photo.title}
+                                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                                    style={{ 
+                                      filter: getFilterString(photo.settings),
+                                      transform: `rotate(${photo.settings.rotation}deg) scaleX(${photo.settings.flipX ? -1 : 1}) scaleY(${photo.settings.flipY ? -1 : 1})`
+                                    }}
+                                    referrerPolicy="no-referrer"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex flex-col items-center justify-center bg-zinc-800 text-zinc-500">
+                                    <ImageIcon className="w-12 h-12 mb-2 opacity-20" />
+                                    <span className="text-[10px] font-bold uppercase tracking-widest">RAW File</span>
+                                    <span className="text-[8px] opacity-50 mt-1">Generando miniatura...</span>
+                                  </div>
+                                )}
+                                {/* Color Balance Overlays for Gallery */}
+                                <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: photo.settings.shadowTint }} />
+                                <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: photo.settings.midtoneTint }} />
+                                <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-40" style={{ backgroundColor: photo.settings.highlightTint }} />
+                              </div>
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4">
+                                <h5 className="text-white font-bold text-sm mb-1">{photo.title}</h5>
+                                <div className="flex items-center gap-2">
+                                  <Button 
+                                    size="sm" 
+                                    className="flex-1 bg-white text-black hover:bg-zinc-200 h-8 text-[10px] uppercase font-bold"
+                                    onClick={() => {
+                                      setSelectedPhotoId(photo.id);
+                                      setActiveTab('editor');
+                                    }}
+                                  >
+                                    Editar Luz
+                                  </Button>
+                                  <Button 
+                                    size="icon" 
+                                    variant="destructive" 
+                                    className="h-8 w-8 shadow-lg shadow-red-900/20"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPhotoToDeleteId(photo.id);
+                                      setIsDeleteDialogOpen(true);
+                                    }}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                              {/* Quick Delete Button (Always Visible on Mobile/Small Screens) */}
+                              <button 
+                                className="absolute top-2 right-2 p-2 bg-black/50 backdrop-blur-md rounded-full text-white/50 hover:text-red-500 sm:hidden transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPhotoToDeleteId(photo.id);
+                                  setIsDeleteDialogOpen(true);
+                                }}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </motion.div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-32 border-2 border-dashed border-zinc-900 rounded-3xl">
+                          <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6">
+                            <ImageIcon className="w-8 h-8 text-zinc-700" />
+                          </div>
+                          <h4 className="text-white font-bold text-lg mb-2">Tu galería está vacía</h4>
+                          <p className="text-zinc-500 text-sm max-w-xs mx-auto">
+                            Empieza subiendo tu primera fotografía para verla aquí.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+          /* Editor View (Lightroom Style) */
+          <div className="fixed inset-0 top-16 bg-zinc-950 flex flex-col overflow-hidden z-40">
+            {/* Top Toolbar */}
+            <div className="h-14 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-xl flex items-center justify-between px-6 z-20">
+              <div className="flex items-center gap-6">
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="text-zinc-400 hover:text-white gap-2"
+                  onClick={() => {
+                    setSelectedPhotoId(null);
+                    setActiveTab('gallery');
+                  }}
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  Biblioteca
+                </Button>
+                <div className="h-4 w-[1px] bg-zinc-800" />
+                <div className="flex items-center gap-2 group">
+                  <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] uppercase font-black">Revelar</Badge>
+                  <div className="relative flex items-center">
+                    <input 
+                      type="text"
+                      value={selectedPhoto?.title || ""}
+                      onChange={(e) => selectedPhoto && updatePhotoTitle(selectedPhoto.id, e.target.value)}
+                      className="text-xs font-bold text-zinc-300 uppercase tracking-widest bg-transparent border-none focus:ring-0 focus:outline-none hover:text-white transition-colors w-64 pr-6"
+                      placeholder="Sin título"
+                    />
+                    <Edit2 className="w-3 h-3 text-zinc-600 absolute right-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Button 
+                  variant={isComparing ? "default" : "outline"} 
+                  size="sm" 
+                  className={`h-8 ${isComparing ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  onClick={() => {
+                    if (!planLimits.compareMode) {
+                      toast.error("El modo comparación requiere el plan Pro o Studio");
+                      setShowPricing(true);
+                      return;
+                    }
+                    setIsComparing(!isComparing);
+                  }}
+                >
+                  <Split className="w-3 h-3" />
+                  {isComparing ? 'Viendo' : 'Comparar'}
+                  {!planLimits.compareMode && <Lock className="w-3 h-3 text-amber-500 ml-1" />}
+                </Button>
+
+                <Button 
+                  variant={isCropping ? "default" : "outline"} 
+                  size="sm" 
+                  className={`h-8 ${isCropping ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  onClick={() => setIsCropping(!isCropping)}
+                >
+                  <Crop className="w-3 h-3" />
+                  {isCropping ? 'Listo' : 'Recortar'}
+                </Button>
+
+                <div className="flex items-center bg-zinc-900 rounded-lg p-1 mr-4">
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}><ZoomOut className="w-3.5 h-3.5" /></Button>
+                  <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.min(5, z + 0.1))}><ZoomIn className="w-3.5 h-3.5" /></Button>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" 
+                  onClick={() => selectedPhoto && analyzePhotoWithIA(selectedPhoto.id)}
+                  disabled={isAnalyzing}
+                >
+                  <Zap className="w-3 h-3 text-amber-500" />
+                  {isAnalyzing ? 'Analizando...' : 'Análisis IA'}
+                </Button>
+                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
+                  <RotateCcw className="w-3 h-3" />
+                  Reset
+                </Button>
+                <Button className="h-8 bg-white text-black hover:bg-zinc-200 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && setIsExportModalOpen(true)}>
+                  <Download className="w-3 h-3" />
+                  Exportar
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex-1 flex overflow-hidden relative">
+              {/* Left Sidebar: Presets & History */}
+              <div className="w-64 border-r border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden hidden lg:flex">
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Navegador</h4>
+                    <div className="aspect-video bg-zinc-900 rounded-lg overflow-hidden relative border border-zinc-800">
+                      {selectedPhoto && (
+                        <img 
+                          src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          className="w-full h-full object-cover opacity-50"
+                          referrerPolicy="no-referrer"
+                        />
+                      )}
+                      <div className="absolute border border-amber-500/50 bg-amber-500/5 pointer-events-none" 
+                        style={{ 
+                          width: `${100/zoom}%`, 
+                          height: `${100/zoom}%`,
+                          left: `${50 - (pan.x/100)}%`,
+                          top: `${50 - (pan.y/100)}%`,
+                          transform: 'translate(-50%, -50%)'
+                        }} 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
+                      <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600">Presets</h4>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-5 w-5 text-zinc-600 hover:text-white"
+                        onClick={() => saveCurrentAsPreset()}
+                      >
+                        <Plus className="w-3 h-3" />
+                      </Button>
+                    </div>
+
+                    <div className="space-y-6">
+                      {/* Grouped Presets */}
+                      {(() => {
+                        const allAvailablePresets = [...SYSTEM_PRESETS, ...userPresets];
+                        const categories = Array.from(new Set(allAvailablePresets.map(p => p.category || "General")));
+                        
+                        return categories.sort().map(category => {
+                          const categoryPresets = allAvailablePresets.filter(p => (p.category || "General") === category);
+                          if (categoryPresets.length === 0) return null;
+
+                          return (
+                            <div key={category} className="space-y-2">
+                              <h5 className="text-[8px] font-bold uppercase tracking-widest text-zinc-700 px-2">{category}</h5>
+                              <div className="space-y-0.5">
+                                {categoryPresets.map(preset => {
+                                  const planLevels: Record<PlanType, number> = { free: 0, pro: 1, studio: 2 };
+                                  const userLevel = planLevels[userProfile?.plan || 'free'];
+                                  const requiredLevel = planLevels[preset.planRequired || 'free'];
+                                  const isLocked = userLevel < requiredLevel;
+
+                                  return (
+                                    <Button 
+                                      key={preset.id}
+                                      variant="ghost"
+                                      size="sm"
+                                      className={`w-full justify-between h-8 text-[10px] uppercase font-bold tracking-widest px-2 group ${
+                                        isLocked ? 'text-zinc-700' : 'text-zinc-500 hover:text-white hover:bg-zinc-900'
+                                      }`}
+                                      onClick={() => applyPreset(preset)}
+                                    >
+                                      <span className="truncate mr-2">{preset.name}</span>
+                                      {isLocked ? (
+                                        <Lock className="w-3 h-3 text-zinc-800 group-hover:text-amber-500/50 transition-colors" />
+                                      ) : (
+                                        preset.planRequired !== 'free' && (
+                                          <Badge className="h-4 px-1 text-[7px] bg-amber-500/10 text-amber-500 border-amber-500/20">
+                                            {preset.planRequired?.toUpperCase()}
+                                          </Badge>
+                                        )
+                                      )}
+                                    </Button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">Historial</h4>
+                    <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar pr-2">
+                      {selectedPhotoId && history[selectedPhotoId]?.length > 0 ? (
+                        [...history[selectedPhotoId]].reverse().map((step, idx) => (
+                          <Button 
+                            key={idx}
+                            variant="ghost"
+                            size="sm"
+                            className="w-full justify-start h-8 text-[9px] uppercase font-bold tracking-widest text-zinc-500 hover:text-white hover:bg-zinc-900 px-2"
+                            onClick={() => {
+                              setPhotos(prev => prev.map(p => p.id === selectedPhotoId ? { ...p, settings: step } : p));
+                            }}
+                          >
+                            <RotateCw className="w-3 h-3 mr-2 opacity-50" />
+                            Paso {history[selectedPhotoId].length - idx}
+                          </Button>
+                        ))
+                      ) : (
+                        <p className="text-[9px] text-zinc-700 italic px-2">Sin cambios recientes</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Main Content Area */}
+              <div className="flex-1 flex flex-col overflow-hidden relative bg-[#0a0a0a]">
+                {/* Image Stage */}
+                <div
+                  ref={imageStageRef}
+                  className={`flex-1 relative overflow-hidden flex items-center justify-center ${isDragging ? 'cursor-grabbing' : zoom > 1 ? 'cursor-grab' : 'cursor-default'}`}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
+                  onDoubleClick={resetZoom}
+                >
+                  {!selectedPhoto ? (
+                    <div className="text-center p-8">
+                      <ImageIcon className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
+                      <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
+                    </div>
+                  ) : (
+                      <div 
+                        className="relative flex items-center justify-center"
+                        style={{ 
+                          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                          width: '90%',
+                          height: '90%',
+                          transition: 'none'
+                        }}
+                      >
+                      <div className="relative max-w-full max-h-full flex items-center justify-center">
+                        {/* Original Image (Underneath) */}
+                        {isComparing && (
+                          <img 
+                            src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                            alt="Original"
+                            className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none absolute"
+                            style={{ 
+                              transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
+                              clipPath: `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`
+                            }}
+                            referrerPolicy="no-referrer"
+                            draggable={false}
+                          />
+                        )}
+
+                        {/* Edited Image */}
+                        <img 
+                          ref={imageRef}
+                          src={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          alt={selectedPhoto.title}
+                          className="max-w-full max-h-full object-contain shadow-[0_0_100px_rgba(0,0,0,0.8)] rounded-sm select-none"
+                          style={{ 
+                            filter: `brightness(var(--img-brightness)) contrast(var(--img-contrast)) saturate(var(--img-saturate)) sepia(var(--img-sepia)) hue-rotate(var(--img-hue)) brightness(var(--img-exposure)) sepia(var(--img-sepia-val)) blur(var(--img-blur)) ${selectedPhoto.settings.sharpening > 0 || selectedPhoto.settings.focus > 0 ? 'url(#sharpen-filter)' : ''}`,
+                            transform: `rotate(var(--img-rotate)) scaleX(var(--img-flip-x)) scaleY(var(--img-flip-y))`,
+                            clipPath: isComparing 
+                              ? `inset(0 ${100 - compareValue}% 0 0)` 
+                              : `inset(var(--img-crop-top) var(--img-crop-right) var(--img-crop-bottom) var(--img-crop-left))`,
+                            zIndex: 1
+                          }}
+                          referrerPolicy="no-referrer"
+                          draggable={false}
+                        />
+
+                        {/* Crop Overlay */}
+                        {isCropping && (
+                          <CropOverlay 
+                            settings={selectedPhoto.settings}
+                            onCropChange={(updates) => updatePhotoSettings(selectedPhoto.id, updates)}
+                            imageRect={imageRef.current?.getBoundingClientRect() || null}
+                          />
+                        )}
+
+                        {/* Comparison Slider Handle */}
+                        {isComparing && (
+                          <>
+                            <div 
+                              className="absolute top-0 bottom-0 w-[2px] bg-amber-500 z-20 pointer-events-none"
+                              style={{ left: `${compareValue}%` }}
+                            >
+                              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-amber-500 rounded-full flex items-center justify-center shadow-lg border-2 border-zinc-950">
+                                <Split className="w-4 h-4 text-black" />
+                              </div>
+                            </div>
+                            <input 
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={compareValue}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onMouseMove={(e) => e.stopPropagation()}
+                              onMouseUp={(e) => e.stopPropagation()}
+                              onChange={(e) => setCompareValue(parseInt(e.target.value))}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-30"
+                            />
+                          </>
+                        )}
+                        {/* Color Balance Overlays */}
+                        <div className="absolute inset-0 pointer-events-none mix-blend-soft-light opacity-60" style={{ backgroundColor: selectedPhoto.settings.shadowTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-overlay opacity-50" style={{ backgroundColor: selectedPhoto.settings.midtoneTint }} />
+                        <div className="absolute inset-0 pointer-events-none mix-blend-color opacity-40" style={{ backgroundColor: selectedPhoto.settings.highlightTint }} />
+                        
+                        {/* Vignette Overlay */}
+                        <div 
+                          className="absolute inset-0 pointer-events-none"
+                          style={{ 
+                            background: `radial-gradient(circle, transparent calc(100% - (var(--img-vignette) * 100%)), rgba(0,0,0,var(--img-vignette)) 100%)`
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Filmstrip */}
+                <Filmstrip 
+                  photos={photos} 
+                  selectedPhotoId={selectedPhotoId} 
+                  onSelect={setSelectedPhotoId} 
+                />
+              </div>
+
+              {/* Right Sidebar: Controls */}
+              <div className="w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden">
+                {selectedPhoto && (
+                  <>
+                    {/* Fixed Histogram Section */}
+                    <div className="p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10">
+                      <div className="space-y-4">
+                        <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                          Histograma en Tiempo Real
+                          {!planLimits.histogramTool && <span className="text-amber-500 flex items-center gap-1"><Lock className="w-3 h-3" /> PRO</span>}
+                        </h4>
+                        {planLimits.histogramTool ? (
+                          <Histogram 
+                            settings={selectedPhoto.settings} 
+                            imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center py-6 gap-2 opacity-50">
+                            <Lock className="w-5 h-5 text-amber-500" />
+                            <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 text-center">
+                              Histograma disponible<br />en plan Pro o Studio
+                            </p>
+                            <Button size="sm" variant="outline" className="mt-1 h-7 text-[9px] border-amber-500/30 text-amber-500 hover:bg-amber-500/10" onClick={() => setShowPricing(true)}>
+                              Ver planes
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Scrollable Content Section */}
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
+                      <div className="space-y-10">
+                        {/* AI Information Section */}
+                        {selectedPhoto.description && (
+                          <div className="space-y-4">
+                            <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                              Análisis IA
+                              <Sparkles className="w-3 h-3 text-amber-500" />
+                            </h4>
+                            <div className="space-y-3">
+                              <p className="text-[11px] text-zinc-400 leading-relaxed italic">
+                                "{selectedPhoto.description}"
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {selectedPhoto.tags?.map((tag, idx) => (
+                                  <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Main Controls */}
+                        <LightingControls 
+                          settings={selectedPhoto.settings} 
+                          onChange={(s) => updatePhotoSettings(selectedPhoto.id, s)}
+                          userPlan={userProfile?.plan || 'free'}
+                          onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
+                          isAutoEnhancing={isAutoEnhancing}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </motion.div>
+    </AnimatePresence>
+  </main>
+    </div>
+  </div>
+
+  <ExportModal 
+    isOpen={isExportModalOpen}
+    onClose={() => setIsExportModalOpen(false)}
+    onExport={downloadImage}
+    photoTitle={selectedPhoto?.title || "Imagen"}
+    planLimits={planLimits}
+    currentPlan={currentPlan}
+    onUpgrade={() => { setIsExportModalOpen(false); setShowPricing(true); }}
+  />
+  <Toaster position="bottom-right" theme="dark" />
+
+      {/* Storage Modal */}
+      <Dialog open={showStorageModal} onOpenChange={setShowStorageModal}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold uppercase tracking-widest flex items-center gap-2">
+              <HardDrive className="w-5 h-5 text-blue-500" />
+              Estado del Almacenamiento
+            </DialogTitle>
+            <DialogDescription className="text-zinc-500">
+              Gestiona el espacio de tu laboratorio digital.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-6 space-y-6">
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
+                <span className="text-zinc-500">Espacio Utilizado</span>
+                <span className="text-white">
+                  {Number((userProfile?.storageUsed || 0) / (1024 * 1024)).toFixed(1)} MB / 
+                  {(userProfile?.plan === 'studio' ? 1024 : userProfile?.plan === 'pro' ? 50 : 2)} GB
+                </span>
+              </div>
+              <Progress 
+                value={((userProfile?.storageUsed || 0) / (userProfile?.plan === 'studio' ? 1024 * 1024 * 1024 * 1024 : userProfile?.plan === 'pro' ? 50 * 1024 * 1024 * 1024 : 2 * 1024 * 1024 * 1024)) * 100} 
+                className="h-2 bg-zinc-900" 
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 space-y-1">
+                <p className="text-[10px] text-zinc-500 font-bold uppercase">Fotos Totales</p>
+                <p className="text-lg font-bold">{photos.length}</p>
+              </div>
+              <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 space-y-1">
+                <p className="text-[10px] text-zinc-500 font-bold uppercase">Archivos RAW</p>
+                <p className="text-lg font-bold">{photos.filter(p => /\.(arw|cr2|nef|dng|orf|raf)$/i.test(p.url)).length}</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 flex items-start gap-3">
+              <Info className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Los archivos RAW consumen significativamente más espacio. Considera optimizar tu galería si te acercas al límite.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter className="flex flex-col sm:flex-row gap-2">
+            <Button variant="outline" className="border-zinc-800 text-zinc-400 hover:bg-zinc-900" onClick={() => setShowStorageModal(false)}>
+              Cerrar
+            </Button>
+            <Button className="bg-blue-600 hover:bg-blue-500 text-white" onClick={() => { setShowStorageModal(false); setActiveTab('gallery'); }}>
+              Gestionar en Galería
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pricing Dialog */}
+      <Dialog open={showPricing} onOpenChange={setShowPricing}>
+        <DialogContent className="max-w-[95vw] w-full lg:max-w-[1200px] h-[95vh] md:h-auto md:max-h-[90vh] overflow-hidden bg-zinc-950 border-zinc-800 text-white flex flex-col p-0 shadow-2xl shadow-black/50">
+          <div className="absolute top-4 right-4 md:top-6 md:right-6 z-50">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="text-zinc-500 hover:text-white h-9 w-9 md:h-10 md:w-10 rounded-full bg-zinc-900/80 backdrop-blur-xl border border-zinc-800 hover:scale-110 transition-all"
+              onClick={() => setShowPricing(false)}
+            >
+              <X className="w-5 h-5" />
+            </Button>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto p-5 md:p-16 scrollbar-thin scrollbar-thumb-zinc-800">
+            <DialogHeader className="mb-8 md:mb-12">
+              <div className="flex justify-center mb-4">
+                <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 px-3 py-0.5 md:px-4 md:py-1 rounded-full text-[10px] md:text-xs font-bold uppercase tracking-widest">
+                  Planes Premium
+                </Badge>
+              </div>
+              <DialogTitle className="text-2xl md:text-5xl font-black text-center bg-gradient-to-b from-white via-white to-zinc-500 bg-clip-text text-transparent tracking-tight leading-tight px-4">
+                Potencia tu Flujo de Trabajo
+              </DialogTitle>
+              <DialogDescription className="text-center text-zinc-400 text-sm md:text-xl mt-3 md:mt-4 max-w-2xl mx-auto leading-relaxed px-4">
+                Elige la herramienta perfecta para tus necesidades. Desde aficionados hasta estudios profesionales.
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8 mb-8 md:mb-12 max-w-6xl mx-auto px-2 md:px-0">
+              {/* Free Plan */}
+              <Card className="bg-zinc-900/30 border-zinc-800/50 p-6 md:p-8 flex flex-col hover:bg-zinc-900/50 transition-all duration-500 group hover:border-zinc-700">
+                <div className="mb-6 md:mb-8">
+                  <div className="w-10 h-10 md:w-12 md:h-12 bg-zinc-800 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <Zap className="w-5 h-5 md:w-6 md:h-6 text-zinc-400" />
+                  </div>
+                  <h3 className="text-xl md:text-2xl font-bold text-zinc-100">Free</h3>
+                  <div className="flex items-baseline gap-1 mt-2">
+                    <span className="text-3xl md:text-4xl font-black text-white">$0</span>
+                    <span className="text-xs md:text-sm font-medium text-zinc-500">/siempre</span>
+                  </div>
+                </div>
+                <ul className="space-y-4 md:space-y-5 mb-8 md:mb-10 flex-1">
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-400">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-zinc-500" />
+                    </div>
+                    Hasta 10 fotos
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-400">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-zinc-500" />
+                    </div>
+                    Export JPEG (hasta 80%)
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-400">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-zinc-500" />
+                    </div>
+                    3 presets personales
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-600 line-through">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-900 flex items-center justify-center shrink-0">
+                      <X className="w-2 h-2 text-zinc-700" />
+                    </div>
+                    Archivos RAW
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-600 line-through">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-900 flex items-center justify-center shrink-0">
+                      <X className="w-2 h-2 text-zinc-700" />
+                    </div>
+                    Smart Enhance IA
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-600 line-through">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-900 flex items-center justify-center shrink-0">
+                      <X className="w-2 h-2 text-zinc-700" />
+                    </div>
+                    Histograma y Comparación
+                  </li>
+                </ul>
+                <Button 
+                  variant="outline" 
+                  className="w-full border-zinc-800 hover:bg-zinc-800 h-12 md:h-14 text-sm md:text-base font-bold rounded-xl transition-all" 
+                  disabled={userProfile?.plan === 'free'}
+                >
+                  {userProfile?.plan === 'free' ? 'Tu Plan Actual' : 'Elegir Free'}
+                </Button>
+              </Card>
+
+              {/* Pro Plan */}
+              <Card className={`bg-zinc-900/40 p-6 md:p-8 flex flex-col relative overflow-hidden transition-all duration-500 hover:bg-zinc-900/60 group ${userProfile?.plan === 'pro' ? 'border-amber-500 ring-2 ring-amber-500/20' : 'border-zinc-800 hover:border-amber-500/30'}`}>
+                <div className="absolute top-0 right-0 bg-amber-500 text-black text-[8px] md:text-[10px] font-black px-3 py-1 md:px-4 md:py-1.5 rounded-bl-xl uppercase tracking-widest">Popular</div>
+                <div className="mb-6 md:mb-8">
+                  <div className="w-10 h-10 md:w-12 md:h-12 bg-amber-500/10 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <Sparkles className="w-5 h-5 md:w-6 md:h-6 text-amber-500" />
+                  </div>
+                  <h3 className="text-xl md:text-2xl font-bold text-zinc-100">Pro</h3>
+                  <div className="flex items-baseline gap-1 mt-2">
+                    <span className="text-3xl md:text-4xl font-black text-white">${PLAN_PRICES.pro}</span>
+                    <span className="text-xs md:text-sm font-medium text-zinc-500">ARS/mes</span>
+                  </div>
+                </div>
+                <ul className="space-y-4 md:space-y-5 mb-8 md:mb-10 flex-1">
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Hasta 200 fotos + archivos RAW
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    50 presets + import .lrtemplate
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Smart Enhance con IA
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Export PNG/WebP + 200% resolución
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Histograma + Modo Comparación
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    10 carpetas organizadoras
+                  </li>
+                </ul>
+                <Button 
+                  className="w-full bg-amber-500 hover:bg-amber-400 text-black h-12 md:h-14 text-sm md:text-base font-black rounded-xl shadow-xl shadow-amber-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  onClick={() => handleUpgrade('pro')}
+                  disabled={isProcessingPayment || userProfile?.plan === 'pro'}
+                >
+                  {isProcessingPayment ? "Procesando..." : userProfile?.plan === 'pro' ? "Tu Plan Actual" : "Actualizar a Pro"}
+                </Button>
+              </Card>
+
+              {/* Studio Plan */}
+              <Card className={`bg-zinc-900/30 border-zinc-800/50 p-6 md:p-8 flex flex-col relative overflow-hidden transition-all duration-500 hover:bg-zinc-900/50 group hover:border-zinc-700 ${userProfile?.plan === 'studio' ? 'border-amber-500 ring-2 ring-amber-500/20' : ''}`}>
+                <div className="mb-6 md:mb-8">
+                  <div className="w-10 h-10 md:w-12 md:h-12 bg-zinc-800 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <Crown className="w-5 h-5 md:w-6 md:h-6 text-amber-500" />
+                  </div>
+                  <h3 className="text-xl md:text-2xl font-bold text-zinc-100">Studio</h3>
+                  <div className="flex items-baseline gap-1 mt-2">
+                    <span className="text-3xl md:text-4xl font-black text-white">${PLAN_PRICES.studio}</span>
+                    <span className="text-xs md:text-sm font-medium text-zinc-500">ARS/mes</span>
+                  </div>
+                </div>
+                <ul className="space-y-4 md:space-y-5 mb-8 md:mb-10 flex-1">
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-300">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Fotos ilimitadas + todo Pro incluido
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-300">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Export 400% resolución (máxima)
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-300">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Presets y carpetas ilimitados
+                  </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-300">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
+                    </div>
+                    Soporte Prioritario 24/7
+                  </li>
+                </ul>
+                <Button 
+                  variant={userProfile?.plan === 'studio' ? "default" : "outline"}
+                  className={`w-full h-12 md:h-14 text-sm md:text-base font-bold rounded-xl transition-all ${userProfile?.plan === 'studio' ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-xl shadow-amber-500/20' : 'border-zinc-800 hover:bg-zinc-800'}`}
+                  onClick={() => handleUpgrade('studio')}
+                  disabled={isProcessingPayment || userProfile?.plan === 'studio'}
+                >
+                  {isProcessingPayment ? "Procesando..." : userProfile?.plan === 'studio' ? "Tu Plan Actual" : "Elegir Studio"}
+                </Button>
+              </Card>
+            </div>
+
+            <div className="flex flex-col items-center justify-center gap-4 text-sm text-zinc-500 border-t border-zinc-900/50 pt-12 mt-8 pb-8 md:pb-0">
+              <div className="flex items-center gap-3 bg-zinc-900/50 px-6 py-2 rounded-full border border-zinc-800">
+                <CreditCard className="w-5 h-5 text-zinc-400" />
+                <span className="text-[10px] md:text-sm font-medium">Pagos seguros vía Mercado Pago</span>
+              </div>
+              <p className="text-zinc-600 text-center text-[10px] md:text-xs max-w-md px-4">
+                Tu suscripción se renovará automáticamente. Puedes cancelar o cambiar de plan en cualquier momento desde tu perfil.
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Save Preset Dialog */}
+      <Dialog open={isSavingPreset} onOpenChange={setIsSavingPreset}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <Save className="w-5 h-5 text-amber-500" />
+              Guardar como Preset
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400 pt-2">
+              Guarda los ajustes actuales de luz y color para aplicarlos rápidamente a otras fotos.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">Nombre del Preset</label>
+              <input 
+                type="text"
+                value={newPresetName}
+                onChange={(e) => setNewPresetName(e.target.value)}
+                placeholder="Ej: Atardecer Cálido"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-amber-500"
+              />
+            </div>
+            
+            {userProfile?.role === 'admin' && (
+              <div className="space-y-4 pt-2 border-t border-zinc-900">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-bold text-zinc-300">Preset del Sistema</label>
+                    <p className="text-xs text-zinc-500">Disponible para todos los usuarios</p>
+                  </div>
+                  <input 
+                    type="checkbox"
+                    checked={newPresetIsSystem}
+                    onChange={(e) => setNewPresetIsSystem(e.target.checked)}
+                    className="w-5 h-5 accent-amber-500"
+                  />
+                </div>
+                
+                {newPresetIsSystem && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">Plan Requerido</label>
+                    <select 
+                      value={newPresetPlan}
+                      onChange={(e) => setNewPresetPlan(e.target.value as PlanType)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="free">Free</option>
+                      <option value="pro">Pro</option>
+                      <option value="studio">Studio</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex gap-3">
+            <Button 
+              variant="ghost" 
+              className="flex-1 border-zinc-800 hover:bg-zinc-900"
+              onClick={() => setIsSavingPreset(false)}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              className="flex-1 bg-amber-500 hover:bg-amber-400 text-black font-bold"
+              onClick={confirmSavePreset}
+            >
+              Guardar Preset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <Trash2 className="w-5 h-5 text-red-500" />
+              ¿Eliminar fotografía?
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400 pt-2">
+              Esta acción eliminará la foto permanentemente de Aura Lab y del almacenamiento en la nube. No se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-3 mt-6">
+            <Button 
+              variant="ghost" 
+              className="flex-1 border-zinc-800 hover:bg-zinc-900"
+              onClick={() => setIsDeleteDialogOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              variant="destructive" 
+              className="flex-1 bg-red-600 hover:bg-red-500"
+              onClick={() => {
+                if (photoToDeleteId) {
+                  deletePhoto(photoToDeleteId);
+                  setIsDeleteDialogOpen(false);
+                }
+              }}
+            >
+              Eliminar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Presets Dialog */}
+      <Dialog open={isBulkImportOpen} onOpenChange={setIsBulkImportOpen}>
+        <DialogContent className="bg-zinc-950 border-zinc-900 text-white max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-amber-500" />
+              Importación Masiva de Presets
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400 pt-2">
+              Selecciona una carpeta que contenga archivos .lrtemplate. Los presets se organizarán por el nombre de la subcarpeta.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">Plan Requerido para este Lote</label>
+              <select 
+                value={bulkImportPlan}
+                onChange={(e) => setBulkImportPlan(e.target.value as PlanType)}
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-amber-500"
+              >
+                <option value="free">Free (Gratis)</option>
+                <option value="pro">Pro (Suscripción)</option>
+                <option value="studio">Studio (Profesional)</option>
+              </select>
+            </div>
+
+            <div className="pt-4">
+              <input
+                type="file"
+                id="bulk-preset-input"
+                className="hidden"
+                {...({ webkitdirectory: "", directory: "" } as any)}
+                onChange={handleBulkImport}
+                disabled={isImporting}
+              />
+              <Button 
+                className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold h-12"
+                onClick={() => document.getElementById('bulk-preset-input')?.click()}
+                disabled={isImporting}
+              >
+                {isImporting ? (
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 animate-spin" />
+                    Procesando...
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <FolderPlus className="w-4 h-4" />
+                    Seleccionar Carpeta de Presets
+                  </div>
+                )}
+              </Button>
+            </div>
+            
+            <p className="text-[10px] text-zinc-500 text-center italic">
+              Nota: Los archivos deben ser formato .lrtemplate (Lightroom Classic).
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+import React from "react";
+import EXIF from "exif-js";
+import { motion, AnimatePresence } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
 import { 
   X,
