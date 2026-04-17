@@ -262,28 +262,43 @@ async function startServer() {
   // Base paths for static files
   let distPath: string;
   if (isElectron && isProd) {
-    // In packaged Electron, __dirname is dist-server/
-    distPath = path.join(__dirname, '..', 'dist');
+    // Try multiple search patterns for packaged apps to ensure resilience
+    const pathsToTry = [
+      path.join(__dirname, '..', 'dist'), // Normal: dist-server/../dist
+      path.join(__dirname, 'dist'),       // If flattened
+      path.join(process.cwd(), 'resources', 'app.asar', 'dist'), // Absolute ASAR path
+      path.join(process.cwd(), 'dist')    // If running from root in prod
+    ];
+    
+    distPath = pathsToTry.find(p => fs.existsSync(p)) || pathsToTry[0];
   } else {
     distPath = process.env.FE_DIST_PATH || path.join(process.cwd(), 'dist');
   }
 
-  console.log(`📂 Static files path determined as: ${distPath}`);
-  console.log(`🔍 Current directory (__dirname): ${__dirname}`);
-  console.log(`🔍 Current process working directory: ${process.cwd()}`);
-  console.log(`🔍 Running in Electron: ${isElectron}, Prod: ${isProd}`);
-
-  if (!fs.existsSync(distPath)) {
-    console.warn(`⚠️ Warning: Static path does not exist: ${distPath}`);
-    // Show additional info for debugging if it fails
-    try {
-      const parentDir = path.join(__dirname, '..');
-      console.log(`📂 Parent directory contents: ${fs.readdirSync(parentDir).join(', ')}`);
-    } catch (e) {}
-  }
+  console.log(`📂 Final Static Path: ${distPath}`);
 
   app.use(express.json({ limit: '50mb' }));
   app.use(cors());
+
+  // Diagnostic route for paths
+  app.get("/api/debug-paths", (req, res) => {
+    let parentFiles = [];
+    try {
+      if (fs.existsSync(path.join(__dirname, '..'))) {
+        parentFiles = fs.readdirSync(path.join(__dirname, '..'));
+      }
+    } catch(e) {}
+
+    res.json({ 
+      distPath,
+      exists: fs.existsSync(distPath),
+      cwd: process.cwd(),
+      __dirname,
+      parentFiles,
+      isElectron,
+      isProd
+    });
+  });
 
   // Serve WASM files from sql.js
   const sqlJsDist = isElectron && isProd 
@@ -629,12 +644,42 @@ async function startServer() {
     console.log(`Starting in PRODUCTION mode serving from: ${distPath}`);
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
+      console.log(`📡 Server catch-all: Request for "${req.path}"`);
+      
+      const indexPath = path.join(distPath, 'index.html');
+      
       // If the request looks like a file (has an extension) and it's not .html, return 404
       // instead of index.html to avoid confusing WASM/JS loaders.
-      if (req.path.includes('.') && !req.path.endsWith('.html')) {
-        return res.status(404).send('Not Found');
+      // Relaxing this to only exclude common code/asset extensions
+      const binaryExtensions = ['.wasm', '.bin', '.dat', '.map'];
+      const isBinaryRequest = binaryExtensions.some(ext => req.path.endsWith(ext));
+      
+      if (req.path.includes('.') && !req.path.endsWith('.html') && isBinaryRequest) {
+        console.warn(`🚫 Blocking potential recursive HTML delivery for binary file: ${req.path}`);
+        return res.status(404).send('Resource Not Found');
       }
-      res.sendFile(path.join(distPath, 'index.html'));
+
+      if (!fs.existsSync(indexPath)) {
+        console.error(`❌ index.html NOT FOUND at: ${indexPath}`);
+        return res.status(500).send(`
+          <html>
+            <body style="background: #09090b; color: #71717a; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 20px; text-align: center;">
+              <h1 style="color: white; margin-bottom: 8px;">Aura Lab: Error de Motor</h1>
+              <p>No se encontró la interfaz de la aplicación en la ruta esperada.</p>
+              <div style="background: #18181b; padding: 12px; border-radius: 8px; border: 1px solid #27272a; margin-top: 20px; text-align: left; font-size: 11px; max-width: 80%; overflow-x: auto;">
+                <strong>Ruta de Busqueda:</strong><br/>
+                <code>${indexPath}</code><br/><br/>
+                <strong>Modo:</strong> ${isElectron ? 'Desktop (Electron)' : 'Web'}<br/>
+                <strong>PWD:</strong> ${process.cwd()}<br/>
+                <strong>__dirname:</strong> ${__dirname}
+              </div>
+              <p style="font-size: 10px; margin-top: 20px;">Por favor, contacta a soporte o reinstala la aplicación.</p>
+            </body>
+          </html>
+        `);
+      }
+      
+      res.sendFile(indexPath);
     });
   }
 
