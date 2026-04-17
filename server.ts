@@ -269,8 +269,17 @@ async function startServer() {
   }
 
   console.log(`📂 Static files path determined as: ${distPath}`);
+  console.log(`🔍 Current directory (__dirname): ${__dirname}`);
+  console.log(`🔍 Current process working directory: ${process.cwd()}`);
+  console.log(`🔍 Running in Electron: ${isElectron}, Prod: ${isProd}`);
+
   if (!fs.existsSync(distPath)) {
     console.warn(`⚠️ Warning: Static path does not exist: ${distPath}`);
+    // Show additional info for debugging if it fails
+    try {
+      const parentDir = path.join(__dirname, '..');
+      console.log(`📂 Parent directory contents: ${fs.readdirSync(parentDir).join(', ')}`);
+    } catch (e) {}
   }
 
   app.use(express.json({ limit: '50mb' }));

@@ -105,13 +105,17 @@ const fixImageUrlLocal = (url: string) => {
 };
 
 // Safe initialization of Gemini AI
-const getAI = () => {
+let aiInstance: GoogleGenAI | null = null;
+try {
   const key = process.env.GEMINI_API_KEY;
-  if (!key || key === "undefined") return null;
-  return new GoogleGenAI({ apiKey: key });
-};
+  if (key && key !== "undefined" && key.trim() !== "") {
+    aiInstance = new GoogleGenAI({ apiKey: key });
+  }
+} catch (e) {
+  console.error("Critical: Failed to pre-initialize Gemini AI:", e);
+}
 
-const ai = getAI();
+const ai = aiInstance;
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -1501,6 +1505,11 @@ export default function App() {
           >
             {isSidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           </Button>
+          {isSidebarOpen && (
+            <div className="mt-2 text-center">
+              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.0.1 PRO</span>
+            </div>
+          )}
         </div>
       </motion.aside>
 

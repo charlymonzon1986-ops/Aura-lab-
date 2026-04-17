@@ -40,8 +40,7 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/sharp/**/*",
-      "**/node_modules/exiftool-vendored/**/*",
-      "**/dist-server/**/*"
+      "**/node_modules/exiftool-vendored/**/*"
     ],
     "win": {
       "target": "portable",
