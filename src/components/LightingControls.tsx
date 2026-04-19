@@ -18,7 +18,7 @@ interface LightingControlsProps {
   onChange: (settings: LightingSettings) => void;
   onPreviewChange?: (settings: LightingSettings) => void;
   userPlan: PlanType;
-  onSmartEnhance: () => void;
+  onSmartEnhance: (prompt?: string) => void;
   isAutoEnhancing: boolean;
   onCopySettings: () => void;
   onPasteSettings: () => void;
@@ -137,6 +137,8 @@ export const LightingControls = React.memo(function LightingControls({
 
   const s = localSettings;
 
+  const [aiPrompt, setAiPrompt] = React.useState("");
+
   return (
     <div className="space-y-10 pb-20">
 
@@ -146,23 +148,54 @@ export const LightingControls = React.memo(function LightingControls({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-amber-500" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-white">Smart Enhance</span>
+              <span className="text-[10px] font-black uppercase tracking-widest text-white">Smart Enhance AI</span>
             </div>
-            <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[8px]">FREE API</Badge>
+            <Badge className="bg-zinc-800 text-zinc-400 border-zinc-700 text-[8px]">GEMINI PRO</Badge>
           </div>
-          <p className="text-[10px] text-zinc-500 leading-relaxed">
-            Optimiza automáticamente la iluminación y el color usando Gemini 3 Flash.
-          </p>
+          
+          <div className="space-y-2">
+            <p className="text-[10px] text-zinc-500 leading-relaxed">
+              Optimiza automáticamente o describe un estilo (ej: "Atardecer cálido", "Look cinematográfico").
+            </p>
+            <div className="relative group">
+              <input 
+                type="text" 
+                placeholder="¿Qué look buscas?..." 
+                className="w-full bg-black/40 border border-zinc-800 rounded-lg py-2 px-3 text-[10px] focus:outline-none focus:border-amber-500/50 transition-all text-zinc-300 placeholder:text-zinc-600"
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !isAutoEnhancing) {
+                    onSmartEnhance(aiPrompt);
+                    setAiPrompt("");
+                  }
+                }}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 text-zinc-500 hover:text-amber-500"
+                onClick={() => {
+                  onSmartEnhance(aiPrompt);
+                  setAiPrompt("");
+                }}
+                disabled={isAutoEnhancing}
+              >
+                <Zap className="w-3 h-3" />
+              </Button>
+            </div>
+          </div>
+
           <Button
-            className="w-full bg-amber-500 hover:bg-amber-600 text-black font-bold text-[10px] uppercase tracking-wider h-9 rounded-xl shadow-lg shadow-amber-500/20"
-            onClick={onSmartEnhance}
+            className="w-full bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-white font-bold text-[10px] uppercase tracking-wider h-9 rounded-xl transition-all"
+            onClick={() => onSmartEnhance()}
             disabled={isAutoEnhancing}
           >
             {isAutoEnhancing ? (
               <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
                 <RotateCw className="w-3.5 h-3.5" />
               </motion.div>
-            ) : "Aplicar Mejora IA"}
+            ) : "Optimización Automática"}
           </Button>
         </div>
 

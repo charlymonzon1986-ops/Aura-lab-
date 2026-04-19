@@ -14,18 +14,18 @@ import archiver from 'archiver';
 import { Photo, LightingSettings } from './src/types';
 
 // Robust folder path detection for both ESM (Dev) and CJS (Electron/Production)
-let _dirname: string;
+let _detectedDirname: string;
 try {
   // @ts-ignore - In packaged Electron/Node CJS, __dirname is a global
   if (typeof __dirname !== 'undefined') {
-    _dirname = __dirname;
+    _detectedDirname = __dirname;
   } else {
-    _dirname = path.dirname(fileURLToPath(import.meta.url));
+    _detectedDirname = path.dirname(fileURLToPath(import.meta.url));
   }
 } catch (e) {
-  _dirname = process.cwd();
+  _detectedDirname = process.cwd();
 }
-const __dirname = _dirname;
+const APP_DIR = _detectedDirname;
 
 // Initialize B2 Client
 const b2 = new B2({
@@ -160,7 +160,7 @@ async function generateThumbnail(buffer: Buffer, fileName: string) {
     if (isRaw) {
       console.log(`[RAW] Processing high-quality extraction for: ${fileName}`);
       // For RAW, we need a temp file for exiftool
-      const tempDir = path.join(__dirname, 'temp');
+      const tempDir = path.join(APP_DIR, 'temp');
       if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
       
       const tempPath = path.join(tempDir, `raw-${Date.now()}${ext}`);
@@ -251,6 +251,21 @@ async function generateThumbnail(buffer: Buffer, fileName: string) {
   }
 }
 
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, updateDoc, increment } from 'firebase/firestore';
+import firebaseConfig from './firebase-applet-config.json';
+
+// Initialize Firebase for server-side validation
+const firebaseApp = initializeApp(firebaseConfig);
+const fsDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+
+// Plan limits constants
+const PLAN_LIMITS: { [key: string]: number } = {
+  'free': 2 * 1024 * 1024 * 1024,   // 2GB
+  'pro': 50 * 1024 * 1024 * 1024,   // 50GB
+  'studio': 1024 * 1024 * 1024 * 1024 // 1TB
+};
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -264,8 +279,8 @@ async function startServer() {
   if (isElectron && isProd) {
     // Try multiple search patterns for packaged apps to ensure resilience
     const pathsToTry = [
-      path.join(__dirname, '..', 'dist'), // Normal: dist-server/../dist
-      path.join(__dirname, 'dist'),       // If flattened
+      path.join(APP_DIR, '..', 'dist'), // Normal: dist-server/../dist
+      path.join(APP_DIR, 'dist'),       // If flattened
       path.join(process.cwd(), 'resources', 'app.asar', 'dist'), // Absolute ASAR path
       path.join(process.cwd(), 'dist')    // If running from root in prod
     ];
@@ -284,8 +299,8 @@ async function startServer() {
   app.get("/api/debug-paths", (req, res) => {
     let parentFiles = [];
     try {
-      if (fs.existsSync(path.join(__dirname, '..'))) {
-        parentFiles = fs.readdirSync(path.join(__dirname, '..'));
+      if (fs.existsSync(path.join(APP_DIR, '..'))) {
+        parentFiles = fs.readdirSync(path.join(APP_DIR, '..'));
       }
     } catch(e) {}
 
@@ -293,17 +308,26 @@ async function startServer() {
       distPath,
       exists: fs.existsSync(distPath),
       cwd: process.cwd(),
-      __dirname,
+      APP_DIR,
       parentFiles,
       isElectron,
       isProd
     });
   });
 
+  // Version check for desktop updates
+  app.get("/api/version", (req, res) => {
+    res.json({
+      latest: "1.0.1",
+      downloadUrl: "https://github.com/charlymonzon/aura-lab/actions", // Change logic when you have a stable URL
+      mandatory: false
+    });
+  });
+
   // Serve WASM files from sql.js
   const sqlJsDist = isElectron && isProd 
-    ? path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist')
-    : path.join(__dirname, 'node_modules', 'sql.js', 'dist');
+    ? path.join(APP_DIR, '..', 'node_modules', 'sql.js', 'dist')
+    : path.join(APP_DIR, 'node_modules', 'sql.js', 'dist');
 
   if (fs.existsSync(sqlJsDist)) {
     console.log("✅ Serving sql.js WASM from:", sqlJsDist);
@@ -403,9 +427,46 @@ async function startServer() {
   });
 
   app.post("/api/webhook/mercadopago", async (req, res) => {
-    // Here you would handle the payment notification and update the user plan in Firestore
-    console.log("MP Webhook received:", req.body);
-    res.sendStatus(200);
+    try {
+      const { action, data } = req.body;
+      console.log(`📡 MP Webhook: Action=${action}, ID=${data?.id}`);
+
+      if (action === "payment.created" || req.query.topic === "payment") {
+        const paymentId = data?.id || req.query.id;
+        
+        // Use MercadoPago SDK to get payment details
+        const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+        if (!accessToken) {
+          console.error("❌ MP Access token not set for webhook");
+          return res.sendStatus(500);
+        }
+
+        const response = await axios.get(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+
+        const payment = response.data;
+        const status = payment.status;
+        const userId = payment.external_reference;
+        const planName = payment.additional_info?.items?.[0]?.id || payment.description?.split('Plan ')[1];
+
+        console.log(`💳 Payment ${paymentId} status: ${status} for user ${userId} (${planName})`);
+
+        if (status === "approved" && userId && planName) {
+          console.log(`✅ Updating plan to ${planName} for user: ${userId}`);
+          await updateDoc(doc(fsDb, "users", userId), {
+            plan: planName.toLowerCase(),
+            lastPaymentId: paymentId,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+      
+      res.sendStatus(200);
+    } catch (error: any) {
+      console.error("❌ MP Webhook Error:", error.message);
+      res.sendStatus(500);
+    }
   });
 
   // GitHub OAuth Routes
@@ -577,7 +638,32 @@ async function startServer() {
   app.post("/api/upload", upload.single("file"), async (req, res) => {
     try {
       const file = req.file;
+      const userId = req.body.userId; // Enviar desde el frontend
+
       if (!file) return res.status(400).json({ error: "No file uploaded" });
+      if (!userId) return res.status(400).json({ error: "User ID required for storage counting" });
+
+      // 0. SERVER-SIDE QUOTA CHECK
+      try {
+        const userDoc = await getDoc(doc(fsDb, "users", userId));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          const userPlan = userData.plan || 'free';
+          const planLimit = PLAN_LIMITS[userPlan] || PLAN_LIMITS['free'];
+          const currentUsage = userData.storageUsed || 0;
+          
+          if (currentUsage + file.size > planLimit) {
+            console.warn(`🛑 Quota exceeded for user ${userId}. Plan: ${userPlan}, Usage: ${currentUsage}, File: ${file.size}`);
+            return res.status(403).json({ 
+              error: "QUOTA_EXCEEDED", 
+              message: `Límite de almacenamiento excedido (${(planLimit/(1024*1024*1024)).toFixed(1)}GB).`
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Error checking quota:", err);
+        // We continue anyway so valid users aren't blocked by a temp DB error
+      }
 
       console.log(`B2 upload started: ${file.originalname} (${file.size} bytes)`);
 
@@ -597,6 +683,16 @@ async function startServer() {
         const thumbName = `thumb-${timestamp}-${path.parse(safeName).name}.jpg`;
         thumbnailUrl = await uploadToB2(thumbBuffer, thumbName, 'image/jpeg');
         console.log(`✅ Miniatura subida a B2: ${thumbnailUrl}`);
+      }
+
+      // 3. UPDATE STORAGE USAGE IN FIRESTORE
+      try {
+        await updateDoc(doc(fsDb, "users", userId), {
+          storageUsed: increment(file.size),
+          lastUploadAt: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error("Error updating storage usage:", err);
       }
       
       return res.json({ 
@@ -671,7 +767,7 @@ async function startServer() {
                 <code>${indexPath}</code><br/><br/>
                 <strong>Modo:</strong> ${isElectron ? 'Desktop (Electron)' : 'Web'}<br/>
                 <strong>PWD:</strong> ${process.cwd()}<br/>
-                <strong>__dirname:</strong> ${__dirname}
+                <strong>__dirname:</strong> ${APP_DIR}
               </div>
               <p style="font-size: 10px; margin-top: 20px;">Por favor, contacta a soporte o reinstala la aplicación.</p>
             </body>

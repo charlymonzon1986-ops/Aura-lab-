@@ -46,7 +46,13 @@ import {
   RotateCw,
   Trash2 as TrashIcon,
   ClipboardPaste,
-  Star
+  Star,
+  Users,
+  Search,
+  Flag,
+  XCircle,
+  UserPlus,
+  History as HistoryIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -69,7 +75,7 @@ import { Filmstrip } from "@/src/components/Filmstrip";
 import { PhotoCanvas, renderImageToCanvas } from "@/src/components/PhotoCanvas";
 import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
 import { CropOverlay } from "@/src/components/CropOverlay";
-import { Photo, DEFAULT_SETTINGS, LightingSettings } from "@/src/types";
+import { Photo, DEFAULT_SETTINGS, LightingSettings, Client, PhotoVersion } from "@/src/types";
 import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
 import { savePhotoLocally, getLocalPhotos, initLocalDB } from "@/src/lib/db";
@@ -173,6 +179,7 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 }
 
 export default function App() {
+  // 1. All States
   const [user, setUser] = React.useState<User | null>(null);
   const [userProfile, setUserProfile] = React.useState<UserProfile | null>(null);
   const [photos, setPhotos] = React.useState<Photo[]>([]);
@@ -182,6 +189,8 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = React.useState(false);
   const [customLogo, setCustomLogo] = React.useState<string | null>(null);
   const [showPricing, setShowPricing] = React.useState(false);
+  const [showUpdateAvailable, setShowUpdateAvailable] = React.useState(false);
+  const [latestVersion, setLatestVersion] = React.useState("");
   const [showStorageModal, setShowStorageModal] = React.useState(false);
   const [showCreateFolder, setShowCreateFolder] = React.useState(false);
   const [newFolderName, setNewFolderName] = React.useState("");
@@ -190,11 +199,6 @@ export default function App() {
   const [previewSettings, setPreviewSettings] = React.useState<LightingSettings | null>(null);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
   const [copiedSettings, setCopiedSettings] = React.useState<LightingSettings | null>(null);
-  
-  // Reset zoom when photo changes
-  React.useEffect(() => {
-    resetZoom();
-  }, [selectedPhotoId]);
   const [isAutoEnhancing, setIsAutoEnhancing] = React.useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [photoToDeleteId, setPhotoToDeleteId] = React.useState<string | null>(null);
@@ -207,30 +211,54 @@ export default function App() {
   const [newPresetPlan, setNewPresetPlan] = React.useState<PlanType>("free");
   const [history, setHistory] = React.useState<Record<string, LightingSettings[]>>({});
   const [totalStorageUsed, setTotalStorageUsed] = React.useState(0);
-
-  // Calculate total storage
-  React.useEffect(() => {
-    const total = photos.reduce((acc, p) => acc + (p.size || 0), 0);
-    setTotalStorageUsed(total);
-  }, [photos]);
   const [isUploading, setIsUploading] = React.useState(false);
-  const [zoom, setZoom] = React.useState(1);
+  const [uploadProgress, setUploadProgress] = React.useState<number>(0);
+  const [clients, setClients] = React.useState<Client[]>([]);
+  const [photoVersions, setPhotoVersions] = React.useState<PhotoVersion[]>([]);
+  const [showCRM, setShowCRM] = React.useState(false);
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [zoom, setZoom] = React.useState(0.8);
   const [pan, setPan] = React.useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = React.useState(false);
   const [dragStart, setDragStart] = React.useState({ x: 0, y: 0 });
-  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor'>('dashboard');
+  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor' | 'clients'>('dashboard');
   const [showControls, setShowControls] = React.useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [isComparing, setIsComparing] = React.useState(false);
   const [compareValue, setCompareValue] = React.useState(50);
   const [isCropping, setIsCropping] = React.useState(false);
   const [isAnalyzing, setIsAnalyzing] = React.useState(false);
-  const imageRef = React.useRef<HTMLCanvasElement>(null);
   const [isPressing, setIsPressing] = React.useState(false);
   const [newPhotoUrl, setNewPhotoUrl] = React.useState("");
+  const [isExportModalOpen, setIsExportModalOpen] = React.useState(false);
+  const [exportSettings, setExportSettings] = React.useState({
+    format: 'image/jpeg' as const,
+    quality: 0.9,
+    scale: 1,
+    watermark: false
+  });
+
+  // 2. All Refs
   const galleryRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
-
+  const imageRef = React.useRef<HTMLCanvasElement>(null);
+  const imageStageRef = React.useRef<HTMLDivElement>(null);
+  
+  // Check for updates
+  React.useEffect(() => {
+    const checkUpdate = async () => {
+      try {
+        const response = await axios.get('/api/version');
+        if (response.data.latest !== "1.0.1") {
+          setLatestVersion(response.data.latest);
+          setShowUpdateAvailable(true);
+        }
+      } catch (e) {
+        console.log("Update check failed (normal if web-only)");
+      }
+    };
+    checkUpdate();
+  }, []);
   const scrollToGallery = () => {
     galleryRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -385,6 +413,92 @@ export default function App() {
     return () => unsubscribe();
   }, [user, userProfile]);
 
+  // Clients Listener
+  React.useEffect(() => {
+    if (!user) {
+      setClients([]);
+      return;
+    }
+
+    const q = query(collection(db, "clients"), where("userId", "==", user.uid), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setClients(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as Client));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "clients"));
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Photo Versions Listener
+  React.useEffect(() => {
+    if (!user || !selectedPhotoId) {
+      setPhotoVersions([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, "photos", selectedPhotoId, "versions"),
+      orderBy("createdAt", "desc"),
+      limit(20)
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setPhotoVersions(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as PhotoVersion));
+    }, (error) => console.error("Error loading versions:", error));
+
+    return () => unsubscribe();
+  }, [user, selectedPhotoId]);
+
+  // Historial de versiones: Guardar versión
+  const savePhotoVersion = async (photo: Photo, name?: string) => {
+    if (!user) return;
+    const versionName = name || `Versión ${new Date().toLocaleTimeString()}`;
+    try {
+      await addDoc(collection(db, "photos", photo.id, "versions"), {
+        photoId: photo.id,
+        userId: user.uid,
+        name: versionName,
+        settings: photo.settings,
+        createdAt: serverTimestamp()
+      });
+      toast.success(`Versión "${versionName}" guardada`);
+    } catch (error) {
+      console.error("Error saving version:", error);
+      toast.error("Error al guardar versión");
+    }
+  };
+
+  // Flags & Colors
+  const setPhotoFlag = async (photoId: string, flag: 'none' | 'pick' | 'reject') => {
+    try {
+      await updateDoc(doc(db, "photos", photoId), { flag });
+      setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, flag } : p));
+    } catch (e) { console.error(e); }
+  };
+
+  const setPhotoColor = async (photoId: string, colorTag: Photo['colorTag']) => {
+    try {
+      await updateDoc(doc(db, "photos", photoId), { colorTag });
+      setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, colorTag } : p));
+    } catch (e) { console.error(e); }
+  };
+
+  // Copy/Paste Logic
+  const syncSettingsToSelected = async () => {
+    if (!selectedPhotoId || selectedPhotoIds.length === 0 || !copiedSettings) return;
+    
+    setIsImporting(true);
+    const batch = writeBatch(db);
+    selectedPhotoIds.forEach(pid => {
+      batch.update(doc(db, "photos", pid), { settings: copiedSettings });
+    });
+    
+    try {
+      await batch.commit();
+      toast.success(`Sincronizados ${selectedPhotoIds.length} fotos`);
+      setSelectedPhotoIds([]);
+    } catch (e) { toast.error("Error en sincronización en lote"); }
+    setIsImporting(false);
+  };
+
   const addPhoto = async (url: string, title: string = "Nueva Foto", size: number = 0, storagePath?: string, thumbnailUrl?: string) => {
     if (!user || !userProfile) {
       toast.error("Debes iniciar sesión para guardar fotos");
@@ -461,8 +575,6 @@ export default function App() {
     }
   };
 
-  const [uploadProgress, setUploadProgress] = React.useState<number>(0);
-
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !user) {
@@ -510,6 +622,7 @@ export default function App() {
       
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("userId", user.uid);
 
       const response = await axios.post("/api/upload", formData, {
         onUploadProgress: (progressEvent) => {
@@ -540,9 +653,32 @@ export default function App() {
   };
 
   const filteredPhotos = React.useMemo(() => {
-    if (!selectedFolderId) return photos;
-    return photos.filter(p => p.folderId === selectedFolderId);
-  }, [photos, selectedFolderId]);
+    let result = photos;
+    
+    // Filter by folder
+    if (selectedFolderId) {
+      result = result.filter(p => p.folderId === selectedFolderId);
+    }
+    
+    // Smart Filter / Search
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      if (q === ':pick') result = result.filter(p => p.flag === 'pick');
+      else if (q === ':reject') result = result.filter(p => p.flag === 'reject');
+      else if (q.startsWith(':')) {
+        const color = q.substring(1);
+        result = result.filter(p => p.colorTag === color);
+      } else {
+        result = result.filter(p => 
+          p.title.toLowerCase().includes(q) || 
+          p.description?.toLowerCase().includes(q) ||
+          p.tags?.some(t => t.toLowerCase().includes(q))
+        );
+      }
+    }
+    
+    return result;
+  }, [photos, selectedFolderId, searchQuery]);
 
   const selectedPhoto = React.useMemo(() => 
     photos.find(p => p.id === selectedPhotoId),
@@ -620,8 +756,6 @@ export default function App() {
     setZoom(0.8);
     setPan({ x: 0, y: 0 });
   };
-
-  const imageStageRef = React.useRef<HTMLDivElement>(null);
 
   // Pan con mouse — funciona en cualquier nivel de zoom
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -926,7 +1060,7 @@ export default function App() {
     }
   };
 
-  const smartEnhance = async (id: string, openEditor = false) => {
+  const smartEnhance = async (id: string, customPrompt?: string, openEditor = false) => {
     const photo = photos.find(p => p.id === id);
     if (!photo) return;
 
@@ -934,8 +1068,8 @@ export default function App() {
     if (openEditor) setSelectedPhotoId(id);
     
     try {
-      toast.loading("Analizando imagen con IA...", { id: "ai-enhance" });
-      console.log("Starting Smart Enhance for photo:", id);
+      toast.loading(customPrompt ? "Aplicando estilo con IA..." : "Analizando imagen con IA...", { id: "ai-enhance" });
+      console.log("Starting Smart Enhance for photo:", id, customPrompt ? `with prompt: ${customPrompt}` : "");
       
       // Get the image data
       let blob: Blob;
@@ -973,30 +1107,40 @@ export default function App() {
       if (!ai) {
         throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
       }
+
+      const baseInstruction = `Analiza esta fotografía y devuelve los ajustes de revelado ideales.
+      REGLAS ESTRICTAS:
+      - NO quemes las altas luces.
+      - NO satures en exceso.
+      - Responde ÚNICAMENTE con un objeto JSON.`;
+
+      const promptUI = customPrompt 
+        ? `El usuario solicita este estilo específico: "${customPrompt}". Ajusta los parámetros para lograr este look creativo manteniendo la calidad técnica.`
+        : `Devuelve los ajustes ideales para que la foto luzca profesional, equilibrada y natural. El objetivo es un revelado orgánico, similar a una película analógica de alta calidad.`;
+
+      const fullPrompt = `${baseInstruction}
+      
+      ${promptUI}
+      
+      JSON schema:
+      - brightness (95-105, 100 es neutro)
+      - contrast (98-108, 100 es neutro)
+      - saturation (98-105, 100 es neutro)
+      - exposure (-0.2 a 0.2, 0 es neutro)
+      - warmth (-5 a 5, 0 es neutro)
+      - tint (-2 a 2, 0 es neutro)
+      - vibrance (100-108, 100 es neutro)
+      - clarity (0-8, 0 es neutro)
+      - highlights (70-100, 100 es neutro)
+      - shadows (95-105, 100 es neutro)
+      - whites (85-100, 100 es neutro)
+      - blacks (95-105, 100 es neutro)`;
+
       const result = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: {
           parts: [
-            { text: `Analiza esta fotografía y devuelve los ajustes de revelado ideales para que luzca profesional, equilibrada y natural. 
-            REGLAS ESTRICTAS:
-            - NO quemes las altas luces. Si la foto es brillante o tiene zonas blancas grandes, reduce 'highlights' y 'exposure'.
-            - NO satures en exceso. Mantén 'saturation' y 'vibrance' en niveles sutiles (cerca de 100).
-            - El objetivo es un revelado orgánico, similar a una película analógica de alta calidad.
-            - Si la foto ya está bien expuesta, devuelve valores neutros (100 para la mayoría, 0 para exposure).
-            
-            Responde ÚNICAMENTE con un objeto JSON con estos campos:
-            - brightness (95-105, 100 es neutro)
-            - contrast (98-108, 100 es neutro)
-            - saturation (98-105, 100 es neutro)
-            - exposure (-0.2 a 0.2, 0 es neutro)
-            - warmth (-5 a 5, 0 es neutro)
-            - tint (-2 a 2, 0 es neutro)
-            - vibrance (100-108, 100 es neutro)
-            - clarity (0-8, 0 es neutro)
-            - highlights (70-100, 100 es neutro)
-            - shadows (95-105, 100 es neutro)
-            - whites (85-100, 100 es neutro)
-            - blacks (95-105, 100 es neutro)` },
+            { text: fullPrompt },
             {
               inlineData: {
                 mimeType: blob.type || "image/jpeg",
@@ -1016,9 +1160,8 @@ export default function App() {
       const aiResponse = JSON.parse(responseText);
       
       // Normalize AI response to match our internal ranges
-      // The AI prompt now asks for -5 to 5 for warmth/tint, so no need to subtract 100
       const enhancedSettings: LightingSettings = {
-        ...DEFAULT_SETTINGS,
+        ...photo.settings,
         ...aiResponse
       };
       
@@ -1045,7 +1188,12 @@ export default function App() {
     }
   };
 
-  const copySettings = () => {
+  const copySettings = (settings?: LightingSettings) => {
+    if (settings) {
+      setCopiedSettings({ ...settings });
+      toast.info("Ajustes copiados");
+      return;
+    }
     const photo = photos.find(p => p.id === selectedPhotoId);
     if (photo) {
       setCopiedSettings({ ...photo.settings });
@@ -1053,13 +1201,13 @@ export default function App() {
     }
   };
 
-  const pasteSettings = async () => {
+  const pasteSettings = async (photoId?: string) => {
     if (!copiedSettings) {
       toast.error("No hay ajustes copiados");
       return;
     }
 
-    const targets = selectedPhotoIds.length > 0 ? selectedPhotoIds : (selectedPhotoId ? [selectedPhotoId] : []);
+    const targets = typeof photoId === 'string' ? [photoId] : (selectedPhotoIds.length > 0 ? selectedPhotoIds : (selectedPhotoId ? [selectedPhotoId] : []));
     
     if (targets.length === 0) {
       toast.error("Selecciona al menos una foto para pegar");
@@ -1244,14 +1392,7 @@ export default function App() {
     }
   };
 
-  const [isExportModalOpen, setIsExportModalOpen] = React.useState(false);
-  const [exportSettings, setExportSettings] = React.useState({
-    format: 'image/jpeg' as 'image/jpeg' | 'image/png' | 'image/webp',
-    quality: 0.9,
-    scale: 1
-  });
-
-  const downloadImage = async (settings: ExportSettings) => {
+  const downloadImage = async (settings: any) => {
     if (!selectedPhoto) return;
     
     const canvas = document.createElement('canvas');
@@ -1438,6 +1579,15 @@ export default function App() {
             {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Editor</span>}
           </Button>
 
+          <Button 
+            variant="ghost" 
+            className={`w-full justify-start h-11 px-3 ${activeTab === 'clients' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+            onClick={() => setActiveTab('clients')}
+          >
+            <Users className={`w-5 h-5 shrink-0 ${activeTab === 'clients' ? 'text-amber-500' : ''}`} />
+            {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Clientes</span>}
+          </Button>
+
           {userProfile?.role === 'admin' && (
             <Button 
               variant="ghost" 
@@ -1515,6 +1665,22 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
+        {showUpdateAvailable && (
+          <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-1.5 flex items-center justify-between shrink-0 z-50">
+            <div className="flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+              <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">Versión {latestVersion} Disponible</span>
+            </div>
+            <Button 
+              variant="link" 
+              className="h-auto p-0 text-[10px] text-zinc-300 underline font-bold"
+              onClick={() => window.open('https://github.com/charlymonzon/aura-lab/actions', '_blank')}
+            >
+              Descargar Actualización
+            </Button>
+          </div>
+        )}
+        
         {/* Top Header (Minimal) */}
         <header className="h-16 border-b border-zinc-900 flex items-center justify-between px-4 md:px-8 bg-zinc-950/50 backdrop-blur-sm shrink-0">
           <div className="flex items-center gap-2 md:gap-4">
@@ -1810,6 +1976,45 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Search & Smart Filters */}
+                    <div className="flex flex-col md:flex-row gap-4 bg-zinc-900/40 p-2 rounded-xl border border-zinc-900/50 backdrop-blur-sm">
+                      <div className="relative flex-1 group">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600 group-focus-within:text-amber-500 transition-colors" />
+                        <input 
+                          type="text" 
+                          placeholder="Buscar por título, etiquetas o metadata..." 
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-amber-500/50 transition-all opacity-80 focus:opacity-100"
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2 overflow-x-auto pr-2">
+                        <Button 
+                          variant="ghost" size="sm" 
+                          className={`text-[9px] uppercase font-bold tracking-widest gap-2 h-8 ${searchQuery === ':pick' ? 'text-green-500 bg-green-500/5' : 'text-zinc-500'}`}
+                          onClick={() => setSearchQuery(prev => prev === ':pick' ? '' : ':pick')}
+                        >
+                          <Flag className="w-3 h-3 fill-current" /> Pick
+                        </Button>
+                        <Button 
+                          variant="ghost" size="sm" 
+                          className={`text-[9px] uppercase font-bold tracking-widest gap-2 h-8 ${searchQuery === ':reject' ? 'text-red-500 bg-red-500/5' : 'text-zinc-500'}`}
+                          onClick={() => setSearchQuery(prev => prev === ':reject' ? '' : ':reject')}
+                        >
+                          <XCircle className="w-3 h-3" /> Reject
+                        </Button>
+                        <div className="w-px h-4 bg-zinc-800 mx-1" />
+                        {(['red', 'yellow', 'green', 'blue', 'purple'] as Photo['colorTag'][]).map(color => (
+                          <button 
+                            key={color}
+                            className={`w-3 h-3 rounded-full hover:scale-150 transition-all border border-black/20 ${searchQuery === `:${color}` ? 'ring-2 ring-white ring-offset-2 ring-offset-zinc-950 scale-125' : ''}`}
+                            style={{ backgroundColor: color }}
+                            onClick={() => setSearchQuery(prev => prev === `:${color}` ? '' : `:${color}`)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
                     {/* Gallery Grid */}
                     <div className="space-y-6 relative">
                       {/* Floating Multi-select Actions */}
@@ -1833,7 +2038,7 @@ export default function App() {
                                 size="sm" 
                                 variant="ghost" 
                                 className={`h-9 text-[10px] uppercase font-bold tracking-widest ${copiedSettings ? 'text-amber-500 hover:bg-amber-500/10' : 'text-zinc-600 cursor-not-allowed'}`}
-                                onClick={pasteSettings}
+                                onClick={() => pasteSettings()}
                                 disabled={!copiedSettings}
                               >
                                 <ClipboardPaste className="w-3.5 h-3.5 mr-2" />
@@ -2010,6 +2215,63 @@ export default function App() {
                       )}
                     </div>
                   </div>
+                ) : activeTab === 'clients' ? (
+                  /* Clients CRM View */
+                  <div className="space-y-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <h3 className="text-2xl font-bold text-white uppercase tracking-tight">Clientes <span className="text-amber-500 italic">CRM</span></h3>
+                        <p className="text-zinc-500 text-sm">Gestiona tus contactos y sesiones de fotos.</p>
+                      </div>
+                      <Button 
+                        disabled 
+                        title="Función en desarrollo"
+                        className="bg-amber-600/50 text-white/50 gap-2 font-bold uppercase tracking-widest text-xs h-10 px-6 cursor-not-allowed"
+                      >
+                        <UserPlus className="w-4 h-4" /> Nuevo Cliente
+                      </Button>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row gap-6">
+                      {/* Search and List */}
+                      <div className="w-full md:w-80 space-y-4">
+                        <div className="relative group">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600 group-focus-within:text-amber-500 transition-colors" />
+                          <input 
+                            type="text" 
+                            placeholder="Buscar clientes..." 
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-amber-500/50"
+                          />
+                        </div>
+                        <ScrollArea className="h-[600px] pr-4">
+                          <div className="space-y-2">
+                            {clients.length > 0 ? clients.map(client => (
+                              <Card key={client.id} className="bg-zinc-900 border-zinc-800 p-4 hover:border-zinc-700 cursor-pointer transition-all">
+                                <h4 className="font-bold text-white">{client.name}</h4>
+                                <p className="text-xs text-zinc-500 truncate">{client.email || 'Sin email'}</p>
+                                <div className="flex items-center gap-2 mt-2">
+                                  <Badge className="text-[8px] bg-amber-500/10 text-amber-500 border-none uppercase font-bold tracking-widest">Activo</Badge>
+                                </div>
+                              </Card>
+                            )) : (
+                              <div className="text-center py-12 bg-zinc-900/10 border border-dashed border-zinc-800 rounded-lg">
+                                <p className="text-zinc-600 text-[10px] uppercase font-bold tracking-widest leading-relaxed">No hay clientes aún.<br/>Empieza creando uno nuevo.</p>
+                              </div>
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </div>
+
+                      {/* Detail Placeholder */}
+                      <div className="flex-1 rounded-2xl bg-zinc-900/20 border border-zinc-900 border-dashed flex flex-col items-center justify-center p-12 text-center text-zinc-600 min-h-[400px]">
+                        <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mb-6">
+                          <Users className="w-8 h-8 opacity-20" />
+                        </div>
+                        <h4 className="font-bold uppercase tracking-widest text-xs text-zinc-500">Selecciona un cliente</h4>
+                        <p className="max-w-xs text-[10px] mt-2 leading-relaxed uppercase tracking-wide opacity-50 font-bold">Aquí podrás ver el historial de sesiones, archivos entregados y notas privadas de cada cliente.</p>
+                      </div>
+                    </div>
+                  </div>
                 ) : (
           /* Editor View (Lightroom Style) */
           <div className="fixed inset-0 top-16 bg-zinc-950 flex flex-col overflow-hidden z-40">
@@ -2065,6 +2327,66 @@ export default function App() {
                   {isCropping ? 'Listo' : 'Recortar'}
                 </Button>
 
+                <div className="h-4 w-px bg-zinc-800 mx-1" />
+
+                {/* Flags & Colors */}
+                <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 px-1">
+                  <Button 
+                    variant="ghost" size="icon" className={`h-7 w-7 ${selectedPhoto?.flag === 'pick' ? 'text-green-500 bg-green-500/10' : 'text-zinc-500'}`}
+                    onClick={() => selectedPhoto && setPhotoFlag(selectedPhoto.id, selectedPhoto.flag === 'pick' ? 'none' : 'pick')}
+                  >
+                    <Flag className="w-3.5 h-3.5 fill-current" />
+                  </Button>
+                  <Button 
+                    variant="ghost" size="icon" className={`h-7 w-7 ${selectedPhoto?.flag === 'reject' ? 'text-red-500 bg-red-500/10' : 'text-zinc-500'}`}
+                    onClick={() => selectedPhoto && setPhotoFlag(selectedPhoto.id, selectedPhoto.flag === 'reject' ? 'none' : 'reject')}
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                  </Button>
+                  
+                  <div className="h-4 w-px bg-zinc-800 mx-1" />
+                  
+                  {(['red', 'yellow', 'green', 'blue', 'purple'] as Photo['colorTag'][]).map(color => (
+                    <button 
+                      key={color}
+                      className={`w-3 h-3 rounded-full transition-transform hover:scale-125 ${
+                        selectedPhoto?.colorTag === color ? 'ring-2 ring-white ring-offset-2 ring-offset-black' : ''
+                      }`}
+                      style={{ backgroundColor: color }}
+                      onClick={() => selectedPhoto && setPhotoColor(selectedPhoto.id, selectedPhoto.colorTag === color ? 'none' : color)}
+                    />
+                  ))}
+                </div>
+
+                <div className="h-4 w-px bg-zinc-800 mx-1" />
+
+                {/* Copy/Paste */}
+                <div className="flex items-center gap-1">
+                  <Button 
+                    variant="ghost" size="sm" className="h-8 text-[10px] text-zinc-500 uppercase font-black"
+                    onClick={() => selectedPhoto && copySettings(selectedPhoto.settings)}
+                  >
+                    Copiar
+                  </Button>
+                  <Button 
+                    variant="ghost" size="sm" className={`h-8 text-[10px] uppercase font-black ${copiedSettings ? 'text-amber-500' : 'text-zinc-700 disabled'}`}
+                    onClick={() => selectedPhoto && pasteSettings(selectedPhoto.id)}
+                    disabled={!copiedSettings}
+                  >
+                    Pegar
+                  </Button>
+                  {selectedPhotoIds.length > 0 && selectedPhoto && (
+                    <Button 
+                      variant="outline" size="sm" className="h-8 border-amber-500/50 text-amber-500 text-[10px] uppercase font-black animate-pulse"
+                      onClick={syncSettingsToSelected}
+                    >
+                      Sincro ({selectedPhotoIds.length})
+                    </Button>
+                  )}
+                </div>
+
+                <div className="h-4 w-px bg-zinc-800 mx-1" />
+
                 <div className="flex items-center bg-zinc-900 rounded-lg p-1 mr-4">
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}><ZoomOut className="w-3.5 h-3.5" /></Button>
                   <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
@@ -2119,6 +2441,39 @@ export default function App() {
                         }} 
                       />
                     </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between border-b border-zinc-900 pb-2">
+                      <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600">Historial de Versiones</h4>
+                      <Button 
+                        variant="ghost" size="icon" className="h-5 w-5 text-zinc-600 hover:text-white"
+                        onClick={() => selectedPhoto && savePhotoVersion(selectedPhoto)}
+                      >
+                        <Save className="w-3 h-3" />
+                      </Button>
+                    </div>
+                    {photoVersions.length > 0 ? (
+                      <div className="space-y-1.5 pt-1">
+                        {photoVersions.map(v => (
+                          <div 
+                            key={v.id} 
+                            className="flex items-center justify-between group p-2 rounded bg-zinc-900/30 border border-zinc-900/50 hover:border-zinc-800 cursor-pointer"
+                            onClick={() => selectedPhoto && updateDoc(doc(db, "photos", selectedPhoto.id), { settings: v.settings })}
+                          >
+                            <div className="overflow-hidden">
+                              <p className="text-[10px] text-zinc-400 font-bold truncate">{v.name}</p>
+                              <p className="text-[8px] text-zinc-600 font-mono">
+                                {v.createdAt?.toDate ? v.createdAt.toDate().toLocaleString() : 'Reciente'}
+                              </p>
+                            </div>
+                            <HistoryIcon className="w-3 h-3 text-zinc-700 group-hover:text-amber-500" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-zinc-700 italic px-2">Sin versiones guardadas</p>
+                    )}
                   </div>
 
                   <div className="space-y-6">
@@ -2356,10 +2711,10 @@ export default function App() {
                           }}
                           onPreviewChange={setPreviewSettings}
                           userPlan={userProfile?.plan || 'free'}
-                          onSmartEnhance={() => smartEnhance(selectedPhoto.id)}
+                          onSmartEnhance={(p) => smartEnhance(selectedPhoto.id, p)}
                           isAutoEnhancing={isAutoEnhancing}
-                          onCopySettings={copySettings}
-                          onPasteSettings={pasteSettings}
+                          onCopySettings={() => copySettings(selectedPhoto.settings)}
+                          onPasteSettings={() => pasteSettings(selectedPhoto.id)}
                           hasCopiedSettings={!!copiedSettings}
                         />
                       </div>

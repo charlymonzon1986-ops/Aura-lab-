@@ -8,12 +8,35 @@ export interface Photo {
   settings: LightingSettings;
   userId?: string;
   createdAt?: any;
+  updatedAt?: any;
   isPublic?: boolean;
   size?: number;
   storagePath?: string | null;
   folderId?: string | null;
   rating?: number; // 0-5 stars
   colorTag?: 'none' | 'red' | 'yellow' | 'green' | 'blue' | 'purple';
+  flag?: 'none' | 'pick' | 'reject';
+}
+
+export interface Client {
+  id: string;
+  userId: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  notes?: string;
+  createdAt: any;
+  updatedAt?: any;
+}
+
+export interface PhotoVersion {
+  id: string;
+  photoId: string;
+  userId: string;
+  name: string;
+  settings: LightingSettings;
+  createdAt: any;
 }
 
 export interface Folder {

@@ -23,14 +23,50 @@
         "id": { "type": "string" },
         "userId": { "type": "string" },
         "url": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "settings": { "type": "object" },
         "isPublic": { "type": "boolean" },
         "folderId": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "flag": { "type": "string", "enum": ["none", "pick", "reject"] },
+        "colorTag": { "type": "string" },
+        "rating": { "type": "number" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "url", "settings"]
+    },
+    "Version": {
+      "title": "Photo Version",
+      "description": "Snapshots of edit history for a specific photo",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "photoId": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "settings": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "photoId", "userId", "settings"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Mini CRM client record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "company": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name"]
     },
     "Folder": {
       "title": "Folder",
@@ -74,6 +110,14 @@
     "/folders/{folderId}": {
       "schema": "Folder",
       "description": "User created folders"
+    },
+    "/photos/{photoId}/versions/{versionId}": {
+      "schema": "Version",
+      "description": "Snapshots of photo edits"
+    },
+    "/clients/{clientId}": {
+      "schema": "Client",
+      "description": "CRM client records"
     }
   }
 }
