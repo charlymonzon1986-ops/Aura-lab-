@@ -52,18 +52,29 @@ import {
   Flag,
   XCircle,
   UserPlus,
-  History as HistoryIcon
+  History as HistoryIcon,
+  Database,
+  ExternalLink,
+  ChevronDown,
+  Mail,
+  Phone,
+  Building2,
+  Calendar,
+  MoreVertical,
+  Check
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { 
   Dialog, 
   DialogContent, 
   DialogHeader, 
   DialogTitle,
   DialogDescription,
-  DialogFooter
+  DialogFooter,
+  DialogTrigger
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
@@ -75,7 +86,7 @@ import { Filmstrip } from "@/src/components/Filmstrip";
 import { PhotoCanvas, renderImageToCanvas } from "@/src/components/PhotoCanvas";
 import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
 import { CropOverlay } from "@/src/components/CropOverlay";
-import { Photo, DEFAULT_SETTINGS, LightingSettings, Client, PhotoVersion } from "@/src/types";
+import { Photo, DEFAULT_SETTINGS, LightingSettings, Client, PhotoVersion, ClientGallery, UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } from "@/src/types";
 import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
 import { savePhotoLocally, getLocalPhotos, initLocalDB } from "@/src/lib/db";
@@ -92,6 +103,7 @@ import {
   doc, 
   setDoc, 
   getDoc,
+  getDocs,
   serverTimestamp,
   orderBy,
   limit,
@@ -99,9 +111,7 @@ import {
   writeBatch
 } from "firebase/firestore";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { Progress } from "@/components/ui/progress";
 import { SYSTEM_PRESETS } from "@/src/constants/presets";
-import { UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } from "@/src/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OperationType, handleFirestoreError } from "@/src/firebase";
 import { parseLrtemplate, mergeWithDefaults } from "@/src/lib/lrParser";
@@ -188,6 +198,14 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 }
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
+}
+
+function AppContent() {
   // 1. All States
   const [user, setUser] = React.useState<User | null>(null);
   const [userProfile, setUserProfile] = React.useState<UserProfile | null>(null);
@@ -204,6 +222,11 @@ export default function App() {
   const [showCreateFolder, setShowCreateFolder] = React.useState(false);
   const [newFolderName, setNewFolderName] = React.useState("");
   const [isProcessingPayment, setIsProcessingPayment] = React.useState(false);
+  const [isCreateClientOpen, setIsCreateClientOpen] = React.useState(false);
+  const [isCreateGalleryOpen, setIsCreateGalleryOpen] = React.useState(false);
+  const [newClientData, setNewClientData] = React.useState({ name: '', email: '', notes: '' });
+  const [newGalleryData, setNewGalleryData] = React.useState({ title: '', clientId: '' });
+  const [selectedClientId, setSelectedClientId] = React.useState<string | null>(null);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
   const [previewSettings, setPreviewSettings] = React.useState<LightingSettings | null>(null);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
@@ -224,13 +247,29 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = React.useState<number>(0);
   const [clients, setClients] = React.useState<Client[]>([]);
   const [photoVersions, setPhotoVersions] = React.useState<PhotoVersion[]>([]);
+  const [galleries, setGalleries] = React.useState<ClientGallery[]>([]);
   const [showCRM, setShowCRM] = React.useState(false);
+  
+  // Real-time Stats Calcs
+  const stats = React.useMemo(() => {
+    return {
+      totalPhotos: photos.length,
+      totalFolders: folders.length,
+      totalClients: clients.length,
+      totalGalleries: galleries.length,
+      storageUsed: photos.reduce((acc, p) => acc + (p.size || 0), 0),
+      capacity: userProfile?.plan === 'studio' ? STORAGE_LIMITS.studio : userProfile?.plan === 'pro' ? STORAGE_LIMITS.pro : STORAGE_LIMITS.free
+    };
+  }, [photos, folders, clients, galleries, userProfile?.plan]);
+
   const [searchQuery, setSearchQuery] = React.useState("");
   const [zoom, setZoom] = React.useState(0.8);
   const [pan, setPan] = React.useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = React.useState(false);
   const [dragStart, setDragStart] = React.useState({ x: 0, y: 0 });
-  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor' | 'clients'>('dashboard');
+  const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor' | 'clients' | 'admin'>('dashboard');
+  const [allUsers, setAllUsers] = React.useState<UserProfile[]>([]);
+  const [systemConfig, setSystemConfig] = React.useState<any>(null);
   const [showControls, setShowControls] = React.useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [isComparing, setIsComparing] = React.useState(false);
@@ -246,6 +285,22 @@ export default function App() {
     scale: 1,
     watermark: false
   });
+  const [publicGallerySlug, setPublicGallerySlug] = React.useState<string | null>(null);
+
+  // Listen for hash changes for Public Gallery
+  React.useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash;
+      if (hash.startsWith('#gallery=')) {
+        setPublicGallerySlug(hash.replace('#gallery=', ''));
+      } else {
+        setPublicGallerySlug(null);
+      }
+    };
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
 
   // 2. All Refs
   const galleryRef = React.useRef<HTMLDivElement>(null);
@@ -384,6 +439,54 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // Combined Clients & Galleries Listener
+  React.useEffect(() => {
+    if (!user) {
+      setClients([]);
+      setGalleries([]);
+      return;
+    }
+
+    const clientsQ = query(collection(db, "clients"), where("userId", "==", user.uid), orderBy("createdAt", "desc"));
+    const unsubClients = onSnapshot(clientsQ, (snapshot) => {
+      setClients(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Client)));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "clients"));
+
+    const galleriesQ = query(collection(db, "galleries"), where("userId", "==", user.uid), orderBy("createdAt", "desc"));
+    const unsubGalleries = onSnapshot(galleriesQ, (snapshot) => {
+      setGalleries(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClientGallery)));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "galleries"));
+    
+    return () => {
+      unsubClients();
+      unsubGalleries();
+    };
+  }, [user]);
+
+  // Admin: All Users Listener
+  React.useEffect(() => {
+    if (!user || userProfile?.role !== 'admin') {
+      setAllUsers([]);
+      return;
+    }
+
+    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setAllUsers(snapshot.docs.map(doc => ({ ...doc.data(), uid: doc.id }) as UserProfile));
+    }, (error) => console.error("Error loading all users:", error));
+
+    return () => unsubscribe();
+  }, [user, userProfile]);
+
+  // Admin: Config Check
+  React.useEffect(() => {
+    if (activeTab === 'admin') {
+      axios.get('/api/admin/config-check')
+        .then(res => setSystemConfig(res.data))
+        .catch(err => console.error("Config check failed:", err));
+    }
+  }, [activeTab]);
+
   // Photos Listener
   React.useEffect(() => {
     if (!user) return;
@@ -459,21 +562,6 @@ export default function App() {
 
     return () => unsubscribe();
   }, [user, userProfile]);
-
-  // Clients Listener
-  React.useEffect(() => {
-    if (!user) {
-      setClients([]);
-      return;
-    }
-
-    const q = query(collection(db, "clients"), where("userId", "==", user.uid), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setClients(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as Client));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, "clients"));
-
-    return () => unsubscribe();
-  }, [user]);
 
   // Photo Versions Listener
   React.useEffect(() => {
@@ -620,6 +708,63 @@ export default function App() {
     } catch (error) {
       toast.error("Error al procesar la URL");
     }
+  };
+
+  const handleCreateClient = async () => {
+    if (!user || !newClientData.name.trim()) {
+      toast.error("El nombre del cliente es obligatorio");
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, "clients"), {
+        userId: user.uid,
+        name: newClientData.name,
+        email: newClientData.email || "",
+        notes: newClientData.notes || "",
+        createdAt: serverTimestamp()
+      });
+      setIsCreateClientOpen(false);
+      setNewClientData({ name: '', email: '', notes: '' });
+      toast.success("Cliente creado con éxito");
+    } catch (e) {
+      console.error(e);
+      toast.error("Error al crear el cliente");
+    }
+  };
+
+  const handleCreateGallery = async () => {
+    if (!user || !newGalleryData.title || selectedPhotoIds.length === 0) {
+      toast.error("Título y fotos seleccionadas son necesarios");
+      return;
+    }
+
+    try {
+      const slug = newGalleryData.title.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Math.random().toString(36).substring(7);
+      await addDoc(collection(db, "galleries"), {
+        userId: user.uid,
+        clientId: newGalleryData.clientId || 'none',
+        title: newGalleryData.title,
+        photoIds: selectedPhotoIds,
+        slug: slug,
+        status: 'published',
+        createdAt: serverTimestamp()
+      });
+      setIsCreateGalleryOpen(false);
+      setSelectedPhotoIds([]);
+      setNewGalleryData({ title: '', clientId: '' });
+      toast.success("Galería publicada con éxito");
+    } catch (e) {
+      console.error(e);
+      toast.error("Error al publicar la galería");
+    }
+  };
+
+
+  const copyGalleryLink = (slug: string) => {
+    const url = `${window.location.origin}${window.location.pathname}#gallery=${slug}`;
+    navigator.clipboard.writeText(url);
+    toast.success("Enlace de galería copiado");
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1636,14 +1781,24 @@ export default function App() {
           </Button>
 
           {userProfile?.role === 'admin' && (
-            <Button 
-              variant="ghost" 
-              className={`w-full justify-start h-11 px-3 ${isBulkImportOpen ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
-              onClick={() => setIsBulkImportOpen(true)}
-            >
-              <ShieldCheck className={`w-5 h-5 shrink-0 ${isBulkImportOpen ? 'text-amber-500' : ''}`} />
-              {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Admin Presets</span>}
-            </Button>
+            <>
+              <Button 
+                variant="ghost" 
+                className={`w-full justify-start h-11 px-3 ${activeTab === 'admin' ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+                onClick={() => setActiveTab('admin')}
+              >
+                <ShieldCheck className={`w-5 h-5 shrink-0 ${activeTab === 'admin' ? 'text-amber-500' : ''}`} />
+                {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Admin Panel</span>}
+              </Button>
+              <Button 
+                variant="ghost" 
+                className={`w-full justify-start h-11 px-3 ${isBulkImportOpen ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/50'}`}
+                onClick={() => setIsBulkImportOpen(true)}
+              >
+                <Database className={`w-5 h-5 shrink-0 ${isBulkImportOpen ? 'text-amber-500' : ''}`} />
+                {isSidebarOpen && <span className="ml-3 text-xs font-bold uppercase tracking-wider">Planillas Admin</span>}
+              </Button>
+            </>
           )}
 
           <div className="pt-4 pb-2">
@@ -1827,7 +1982,7 @@ export default function App() {
                               </div>
                               <div>
                                 <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Total Fotos</p>
-                                <p className="text-xl font-bold text-white">{photos.length}</p>
+                                <p className="text-xl font-bold text-white">{stats.totalPhotos}</p>
                                 <p className="text-[8px] text-amber-500/70 font-bold uppercase mt-1">Entrar a Galería →</p>
                               </div>
                             </div>
@@ -1843,14 +1998,14 @@ export default function App() {
                               <div className="flex-1">
                                 <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Espacio</p>
                                 <div className="flex items-end justify-between">
-                                  <p className="text-xl font-bold text-white">{Number(totalStorageUsed / (1024 * 1024)).toFixed(1)}MB</p>
+                                  <p className="text-xl font-bold text-white">{(stats.storageUsed / (1024 * 1024)).toFixed(1)}MB</p>
                                   <p className="text-[9px] text-zinc-500 mb-1">de {userProfile?.plan === 'studio' ? '1TB' : userProfile?.plan === 'pro' ? '50GB' : '2GB'}</p>
                                 </div>
                                 <div className="mt-2 h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
                                   <div 
                                     className="h-full bg-blue-500 transition-all duration-500" 
                                     style={{ 
-                                      width: `${Math.min(100, (totalStorageUsed / ( (userProfile?.plan === 'studio' ? 1024 : userProfile?.plan === 'pro' ? 50 : 2) * 1024 * 1024 * 1024)) * 100)}%` 
+                                      width: `${Math.min(100, (stats.storageUsed / stats.capacity) * 100)}%` 
                                     }} 
                                   />
                                 </div>
@@ -1860,27 +2015,28 @@ export default function App() {
                           </Card>
                           <Card 
                             className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
-                            onClick={() => setShowPricing(true)}
+                            onClick={() => setActiveTab('clients')}
                           >
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
-                                <Zap className="w-5 h-5 text-purple-500" />
+                                <Users className="w-5 h-5 text-purple-500" />
                               </div>
                               <div>
-                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Plan Activo</p>
-                                <p className="text-xl font-bold text-white uppercase">{userProfile?.plan || 'Free'}</p>
-                                <p className="text-[8px] text-purple-500/70 font-bold uppercase mt-1">Ver Planes →</p>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Clientes</p>
+                                <p className="text-xl font-bold text-white">{stats.totalClients}</p>
+                                <p className="text-[8px] text-purple-500/70 font-bold uppercase mt-1">Gestionar Clientes →</p>
                               </div>
                             </div>
                           </Card>
-                          <Card className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]" onClick={() => setShowPricing(true)}>
+                          <Card className="bg-zinc-900/50 border-zinc-800 p-4 cursor-pointer hover:bg-zinc-800/50 transition-all hover:scale-[1.02] active:scale-[0.98]" onClick={() => setActiveTab('clients')}>
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">
-                                <ShieldCheck className="w-5 h-5 text-green-500" />
+                                <Eye className="w-5 h-5 text-green-500" />
                               </div>
                               <div>
-                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Suscripción</p>
-                                <p className="text-xs font-medium text-green-500">Gestionar Plan →</p>
+                                <p className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Galerías</p>
+                                <p className="text-xl font-bold text-white">{stats.totalGalleries}</p>
+                                <p className="text-[8px] text-green-500/70 font-bold uppercase mt-1">Ver Públicas →</p>
                               </div>
                             </div>
                           </Card>
@@ -2124,6 +2280,56 @@ export default function App() {
                               >
                                 Cancelar
                               </Button>
+
+                              <Dialog open={isCreateGalleryOpen} onOpenChange={setIsCreateGalleryOpen}>
+                                <DialogTrigger
+                                  className="inline-flex items-center justify-center rounded-md text-[10px] uppercase font-black tracking-[0.2em] bg-amber-600 hover:bg-amber-500 text-white h-9 px-3 ml-2 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                                >
+                                  <Eye className="w-3.5 h-3.5 mr-2" />
+                                  Crear Galería
+                                </DialogTrigger>
+                                <DialogContent className="bg-zinc-950 border-zinc-800 text-white">
+                                  <DialogHeader>
+                                    <DialogTitle className="text-xl font-black uppercase tracking-widest italic">Nueva Galería <span className="text-amber-500">Privada</span></DialogTitle>
+                                    <DialogDescription className="text-zinc-500">
+                                      Comparte estas {selectedPhotoIds.length} fotos con un cliente.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="space-y-6 py-6">
+                                    <div className="space-y-2">
+                                      <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Título de la Sesión</label>
+                                      <input 
+                                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-4 text-sm focus:outline-none focus:border-amber-500" 
+                                        placeholder="Ej: Boda de Ana y Luis"
+                                        value={newGalleryData.title}
+                                        onChange={e => setNewGalleryData({...newGalleryData, title: e.target.value})}
+                                      />
+                                    </div>
+                                    <div className="space-y-2">
+                                      <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Seleccionar Cliente</label>
+                                      <select 
+                                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-4 text-sm focus:outline-none focus:border-amber-500 appearance-none text-zinc-400"
+                                        value={newGalleryData.clientId}
+                                        onChange={e => setNewGalleryData({...newGalleryData, clientId: e.target.value})}
+                                      >
+                                        <option value="">-- Elige un cliente --</option>
+                                        {clients.map(c => (
+                                          <option key={c.id} value={c.id}>{c.name}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </div>
+                                  <DialogFooter>
+                                    <Button variant="outline" onClick={() => setIsCreateGalleryOpen(false)}>Cancelar</Button>
+                                    <Button 
+                                      className="bg-amber-600 hover:bg-amber-500 text-white" 
+                                      onClick={handleCreateGallery}
+                                    >
+                                      Publicar Galería
+                                    </Button>
+                                  </DialogFooter>
+                                </DialogContent>
+                              </Dialog>
                             </div>
                           </motion.div>
                         )}
@@ -2270,13 +2476,54 @@ export default function App() {
                         <h3 className="text-2xl font-bold text-white uppercase tracking-tight">Clientes <span className="text-amber-500 italic">CRM</span></h3>
                         <p className="text-zinc-500 text-sm">Gestiona tus contactos y sesiones de fotos.</p>
                       </div>
-                      <Button 
-                        disabled 
-                        title="Función en desarrollo"
-                        className="bg-amber-600/50 text-white/50 gap-2 font-bold uppercase tracking-widest text-xs h-10 px-6 cursor-not-allowed"
-                      >
-                        <UserPlus className="w-4 h-4" /> Nuevo Cliente
-                      </Button>
+                      <Dialog open={isCreateClientOpen} onOpenChange={setIsCreateClientOpen}>
+                        <DialogTrigger
+                          className="inline-flex items-center justify-center rounded-md bg-amber-600 hover:bg-amber-500 text-white gap-2 font-bold uppercase tracking-widest text-xs h-10 px-6 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                        >
+                          <UserPlus className="w-4 h-4" /> Nuevo Cliente
+                        </DialogTrigger>
+                        <DialogContent className="bg-zinc-950 border-zinc-800 text-white">
+                          <DialogHeader>
+                            <DialogTitle className="text-xl font-bold uppercase tracking-widest italic">Nuevo Cliente</DialogTitle>
+                            <DialogDescription className="text-zinc-500">
+                              Agrega los datos de contacto para tus galerías.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-4 py-4">
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Nombre Completo</label>
+                              <input 
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-sm focus:outline-none focus:border-amber-500" 
+                                placeholder="Ej: Juan Pérez"
+                                value={newClientData.name}
+                                onChange={e => setNewClientData({...newClientData, name: e.target.value})}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Correo Electrónico</label>
+                              <input 
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-sm focus:outline-none focus:border-amber-500" 
+                                placeholder="email@ejemplo.com"
+                                value={newClientData.email}
+                                onChange={e => setNewClientData({...newClientData, email: e.target.value})}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Notas Privadas</label>
+                              <textarea 
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-sm focus:outline-none focus:border-amber-500 h-24" 
+                                placeholder="Detalles de la sesión, precios, etc."
+                                value={newClientData.notes}
+                                onChange={e => setNewClientData({...newClientData, notes: e.target.value})}
+                              />
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <Button variant="outline" onClick={() => setIsCreateClientOpen(false)}>Cancelar</Button>
+                            <Button className="bg-amber-600 hover:bg-amber-500 text-white" onClick={handleCreateClient}>Guardar Cliente</Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
                     </div>
 
                     <div className="flex flex-col md:flex-row gap-6">
@@ -2293,7 +2540,11 @@ export default function App() {
                         <ScrollArea className="h-[600px] pr-4">
                           <div className="space-y-2">
                             {clients.length > 0 ? clients.map(client => (
-                              <Card key={client.id} className="bg-zinc-900 border-zinc-800 p-4 hover:border-zinc-700 cursor-pointer transition-all">
+                              <Card 
+                                key={client.id} 
+                                className={`bg-zinc-900 border-zinc-800 p-4 cursor-pointer transition-all ${selectedClientId === client.id ? 'border-amber-500 bg-amber-500/5' : 'hover:border-zinc-700'}`}
+                                onClick={() => setSelectedClientId(client.id)}
+                              >
                                 <h4 className="font-bold text-white">{client.name}</h4>
                                 <p className="text-xs text-zinc-500 truncate">{client.email || 'Sin email'}</p>
                                 <div className="flex items-center gap-2 mt-2">
@@ -2309,14 +2560,168 @@ export default function App() {
                         </ScrollArea>
                       </div>
 
-                      {/* Detail Placeholder */}
-                      <div className="flex-1 rounded-2xl bg-zinc-900/20 border border-zinc-900 border-dashed flex flex-col items-center justify-center p-12 text-center text-zinc-600 min-h-[400px]">
-                        <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mb-6">
-                          <Users className="w-8 h-8 opacity-20" />
-                        </div>
-                        <h4 className="font-bold uppercase tracking-widest text-xs text-zinc-500">Selecciona un cliente</h4>
-                        <p className="max-w-xs text-[10px] mt-2 leading-relaxed uppercase tracking-wide opacity-50 font-bold">Aquí podrás ver el historial de sesiones, archivos entregados y notas privadas de cada cliente.</p>
+                      {/* Detail View */}
+                      <div className="flex-1 rounded-2xl bg-zinc-950/50 border border-zinc-900 min-h-[600px] overflow-hidden">
+                        {selectedClientId ? (
+                          <div className="p-8 space-y-8 h-full">
+                            {(() => {
+                              const client = clients.find(c => c.id === selectedClientId);
+                              const clientGalleries = galleries.filter(g => g.clientId === selectedClientId);
+                              return (
+                                <>
+                                  <div className="flex items-center justify-between border-b border-zinc-900 pb-8">
+                                    <div className="space-y-1">
+                                      <h3 className="text-3xl font-black text-white">{client?.name}</h3>
+                                      <p className="text-zinc-500 text-sm">{client?.email}</p>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      <Button variant="outline" className="border-zinc-800 h-10">Editar Perfil</Button>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                    <div className="space-y-4">
+                                      <h4 className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em]">Notas del Cliente</h4>
+                                      <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-900 text-sm text-zinc-400 leading-relaxed italic">
+                                        {client?.notes || "Sin notas registradas."}
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-4">
+                                      <div className="flex items-center justify-between">
+                                        <h4 className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em]">Galerías Entregadas</h4>
+                                        <Badge className="bg-blue-500/10 text-blue-500 border-none px-3 font-bold">{clientGalleries.length}</Badge>
+                                      </div>
+                                      
+                                      <div className="space-y-3">
+                                        {clientGalleries.length > 0 ? clientGalleries.map(gal => (
+                                          <div key={gal.id} className="flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl group hover:border-amber-500/50 transition-all">
+                                            <div className="flex items-center gap-4">
+                                              <div className="w-12 h-12 rounded bg-zinc-950 flex items-center justify-center border border-zinc-800">
+                                                <ImageIcon className="w-5 h-5 text-zinc-700" />
+                                              </div>
+                                              <div>
+                                                <p className="text-sm font-bold text-white">{gal.title}</p>
+                                                <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">{gal.photoIds.length} Fotos</p>
+                                              </div>
+                                            </div>
+                                            <Button 
+                                              variant="ghost" 
+                                              size="icon" 
+                                              className="text-zinc-600 hover:text-amber-500"
+                                              onClick={() => window.open(`/gallery/${gal.slug}`, '_blank')}
+                                            >
+                                              <ExternalLink className="w-4 h-4" />
+                                            </Button>
+                                          </div>
+                                        )) : (
+                                          <div className="p-12 text-center bg-zinc-900/20 border border-dashed border-zinc-900 rounded-xl">
+                                            <p className="text-[10px] font-black text-zinc-700 uppercase tracking-widest">No hay galerías aún</p>
+                                            <Button 
+                                              size="sm" 
+                                              variant="link" 
+                                              className="text-amber-500 text-[10px] font-black uppercase mt-2 h-auto p-0"
+                                              onClick={() => setActiveTab('gallery')}
+                                            >
+                                              Ir a Galería →
+                                            </Button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center p-12 text-center text-zinc-600 h-full">
+                            <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mb-6">
+                              <Users className="w-8 h-8 opacity-20" />
+                            </div>
+                            <h4 className="font-bold uppercase tracking-widest text-xs text-zinc-500">Selecciona un cliente</h4>
+                            <p className="max-w-xs text-[10px] mt-2 leading-relaxed uppercase tracking-wide opacity-50 font-bold">Aquí podrás ver el historial de sesiones, archivos entregados y notas privadas de cada cliente.</p>
+                          </div>
+                        )}
                       </div>
+                    </div>
+                  </div>
+                ) : activeTab === 'admin' ? (
+                  /* Admin Dashboard View */
+                  <div className="space-y-10">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <h3 className="text-2xl font-bold text-white uppercase tracking-tight">Admin <span className="text-amber-500 italic">Panel</span></h3>
+                        <p className="text-zinc-500 text-sm">Control central de Aura Lab.</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Badge className={`px-3 py-1 ${systemConfig?.gemini_ai ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'} border-none text-[8px] font-black uppercase tracking-widest`}>
+                          AI: {systemConfig?.gemini_ai ? 'Online' : 'Offline'}
+                        </Badge>
+                        <Badge className={`px-3 py-1 ${systemConfig?.mercadopago ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'} border-none text-[8px] font-black uppercase tracking-widest`}>
+                          MP: {systemConfig?.mercadopago ? 'Online' : 'Offline'}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <Card className="bg-zinc-900 border-zinc-800 p-6">
+                        <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Usuarios Totales</p>
+                        <h4 className="text-3xl font-black text-white">{allUsers.length}</h4>
+                      </Card>
+                      <Card className="bg-zinc-900 border-zinc-800 p-6">
+                        <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Plan Pro / Studio</p>
+                        <h4 className="text-3xl font-black text-amber-500">
+                          {allUsers.filter(u => u.plan !== 'free').length}
+                        </h4>
+                      </Card>
+                      <Card className="bg-zinc-900 border-zinc-800 p-6">
+                        <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Estado del Servidor</p>
+                        <h4 className="text-3xl font-black text-blue-500 uppercase tracking-tighter">{systemConfig?.env || '...'}</h4>
+                      </Card>
+                    </div>
+
+                    <div className="space-y-4">
+                      <h4 className="text-xs font-black text-zinc-400 uppercase tracking-widest">Lista de Usuarios</h4>
+                      <Card className="bg-zinc-900 border-zinc-800 overflow-hidden">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-zinc-950 text-zinc-500 uppercase font-black tracking-widest">
+                            <tr>
+                              <th className="px-6 py-4">Usuario</th>
+                              <th className="px-6 py-4">Email</th>
+                              <th className="px-6 py-4">Plan</th>
+                              <th className="px-6 py-4">Registro</th>
+                              <th className="px-6 py-4 text-right">Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-zinc-800">
+                            {allUsers.map((u) => (
+                              <tr key={u.uid} className="hover:bg-zinc-800/50 transition-colors">
+                                <td className="px-6 py-4 font-bold text-zinc-300">{u.displayName}</td>
+                                <td className="px-6 py-4 text-zinc-500">{u.email}</td>
+                                <td className="px-6 py-4">
+                                  <Badge className={`
+                                    ${u.plan === 'studio' ? 'bg-purple-500/10 text-purple-500' : 
+                                      u.plan === 'pro' ? 'bg-amber-500/10 text-amber-500' : 
+                                      'bg-zinc-800 text-zinc-500'} 
+                                    border-none text-[8px] font-black uppercase tracking-widest px-2
+                                  `}>
+                                    {u.plan}
+                                  </Badge>
+                                </td>
+                                <td className="px-6 py-4 text-zinc-600">
+                                  {new Date(u.createdAt).toLocaleDateString()}
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  <Button variant="ghost" size="sm" className="h-7 text-[10px] uppercase font-black text-zinc-500 hover:text-white">
+                                    Gestionar
+                                  </Button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </Card>
                     </div>
                   </div>
                 ) : (
@@ -2905,6 +3310,12 @@ export default function App() {
                     </div>
                     Presets Gratuitos
                   </li>
+                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-400">
+                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
+                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-zinc-500" />
+                    </div>
+                    Sin Marcas de Agua
+                  </li>
                 </ul>
                 <Button 
                   variant="outline" 
@@ -2940,12 +3351,6 @@ export default function App() {
                       <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
                     </div>
                     Presets Pro Ilimitados
-                  </li>
-                  <li className="text-sm md:text-base flex items-center gap-3 md:gap-4 text-zinc-200">
-                    <div className="w-4 h-4 md:w-5 md:h-5 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
-                      <CheckCircle2 className="w-2.5 h-2.5 md:w-3 md:h-3 text-amber-500" />
-                    </div>
-                    Sin Marcas de Agua
                   </li>
                 </ul>
                 <Button 
@@ -3183,6 +3588,99 @@ export default function App() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Public Gallery View Wrapper */}
+      {publicGallerySlug && (
+        <div className="fixed inset-0 z-[100] bg-zinc-950 overflow-auto">
+          <PublicGallery slug={publicGallerySlug} onBack={() => setPublicGallerySlug(null)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- PUBLIC GALLERY COMPONENT ---
+function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
+  const [gallery, setGallery] = React.useState<ClientGallery | null>(null);
+  const [photos, setPhotos] = React.useState<Photo[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    const fetchGallery = async () => {
+      try {
+        const q = query(collection(db, "galleries"), where("slug", "==", slug));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const gData = snap.docs[0].data() as ClientGallery;
+          setGallery({ ...gData, id: snap.docs[0].id });
+          
+          if (gData.photoIds && gData.photoIds.length > 0) {
+            const pQuery = query(collection(db, "photos"), where("__name__", "in", gData.photoIds.slice(0, 30)));
+            const pSnap = await getDocs(pQuery);
+            setPhotos(pSnap.docs.map(d => ({ ...d.data(), id: d.id } as Photo)));
+          }
+        }
+      } catch (err) {
+        console.error("Gallery fetch error:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchGallery();
+  }, [slug]);
+
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center bg-zinc-950">
+      <Activity className="w-8 h-8 text-amber-500 animate-spin" />
+    </div>
+  );
+
+  if (!gallery) return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-950 text-white p-6 md:p-12 text-center">
+      <XCircle className="w-16 h-16 text-zinc-800 mb-6" />
+      <h1 className="text-3xl font-black uppercase tracking-tighter italic mb-4">Mala <span className="text-amber-500">Noticia</span></h1>
+      <p className="text-zinc-500 max-w-sm mb-8">Esta galería no existe o ha sido eliminada por el fotógrafo.</p>
+      <Button variant="outline" onClick={onBack}>Volver</Button>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white">
+      <header className="fixed top-0 left-0 right-0 z-50 bg-zinc-950/80 backdrop-blur-xl border-b border-zinc-900 px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/20">
+            <Sparkles className="text-black w-6 h-6" />
+          </div>
+          <div>
+            <h1 className="text-sm font-black uppercase tracking-widest">{gallery.title}</h1>
+            <p className="text-[10px] text-amber-500/70 font-bold uppercase tracking-[0.2em]">Galería Privada</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" className="text-[10px] font-bold uppercase tracking-widest text-zinc-400" onClick={onBack}>
+            Salir
+          </Button>
+          <Button size="sm" className="bg-white text-black hover:bg-zinc-200 text-[10px] font-black uppercase tracking-widest px-6" onClick={() => toast.success("Próximamente...")}>
+            Descargar
+          </Button>
+        </div>
+      </header>
+
+      <main className="pt-24 pb-12 px-6 md:px-12 max-w-7xl mx-auto">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {photos.map((photo) => (
+            <motion.div key={photo.id} className="relative aspect-[4/5] bg-zinc-900 rounded-2xl overflow-hidden group">
+              <img src={photo.url} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
+                <Button size="sm" variant="secondary" className="w-full text-xs font-bold" onClick={() => window.open(photo.url, '_blank')}>
+                  <Download className="w-3 h-3 mr-2" />
+                  Ver Original
+                </Button>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      </main>
     </div>
   );
 }

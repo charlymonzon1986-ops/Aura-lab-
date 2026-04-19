@@ -30,6 +30,21 @@ export interface Client {
   updatedAt?: any;
 }
 
+export interface ClientGallery {
+  id: string;
+  userId: string;
+  clientId: string;
+  title: string;
+  description?: string;
+  photoIds: string[];
+  password?: string;
+  status: 'draft' | 'published' | 'expired';
+  expiresAt?: string | null;
+  createdAt: any;
+  updatedAt?: any;
+  slug: string; // URL friendly name
+}
+
 export interface PhotoVersion {
   id: string;
   photoId: string;
