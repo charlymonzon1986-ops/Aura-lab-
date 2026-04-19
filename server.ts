@@ -6,6 +6,13 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { readFileSync } from "fs";
+
+// Load Firebase Config securely in ESM
+const firebaseConfig = JSON.parse(
+  readFileSync(new URL('./firebase-applet-config.json', import.meta.url), 'utf-8')
+);
+
 import cors from "cors";
 import multer from "multer";
 import sharp from "sharp";
@@ -257,9 +264,8 @@ async function generateThumbnail(buffer: Buffer, fileName: string) {
 
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, updateDoc, increment } from 'firebase/firestore';
-import firebaseConfig from './firebase-applet-config.json';
 
-// Initialize Firebase for server-side validation
+// Initialize Firebase for server-side validation using the loaded config
 const firebaseApp = initializeApp(firebaseConfig);
 const fsDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
