@@ -25,7 +25,9 @@
       "dist/**/*",
       "dist-server/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "firebase-applet-config.json",
+      "firebase-blueprint.json"
     ],
     "extraResources": [
       {
@@ -34,7 +36,8 @@
         "filter": [
           "**/*"
         ]
-      }
+      },
+      "firebase-applet-config.json"
     ],
     "npmRebuild": true,
     "asar": true,

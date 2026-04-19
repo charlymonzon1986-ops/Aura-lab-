@@ -20,15 +20,27 @@ function startExpressServer() {
       NODE_ENV: isDev ? 'development' : 'production',
       ELECTRON_RUN_AS_NODE: '1'
     },
-    stdio: 'inherit' // See server logs in the terminal/console
+    stdio: ['inherit', 'pipe', 'pipe', 'ipc']
+  });
+
+  serverProcess.stdout.on('data', (data) => {
+    console.log(`[Engine] ${data.toString()}`);
+  });
+
+  serverProcess.stderr.on('data', (data) => {
+    console.error(`[Engine Error] ${data.toString()}`);
   });
 
   serverProcess.on('error', (err) => {
     console.error('❌ Failed to start server process:', err);
+    dialog.showErrorBox('Error Fatal de Motor', `No se pudo iniciar el proceso del motor: ${err.message}`);
   });
 
-  serverProcess.on('exit', (code) => {
-    console.log(`📡 Server process exited with code ${code}`);
+  serverProcess.on('exit', (code, signal) => {
+    console.log(`📡 Server process exited with code ${code} and signal ${signal}`);
+    if (code !== 0 && code !== null) {
+      dialog.showErrorBox('Motor Detenido', `El motor de Aura Lab se cerró inesperadamente (Código: ${code}).\n\nEsto suele suceder por falta de permisos o puerto ocupado.`);
+    }
   });
 }
 
