@@ -2,20 +2,34 @@ const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
 const isDev = !app.isPackaged;
 
-// Global reference to window to avoid garbage collection
+const { fork } = require('child_process');
+
+// Global reference to window and server process
 let mainWindow;
+let serverProcess;
 
 function startExpressServer() {
-  try {
-    process.env.NODE_ENV = isDev ? 'development' : 'production';
-    // Load the server. In CJS, this executes the top-level startServer()
-    require('../dist-server/server.cjs');
-  } catch (err) {
-    console.error('Failed to start Express server:', err);
-    if (!isDev) {
-      dialog.showErrorBox('Error de Inicio', 'No se pudo iniciar el servidor interno: ' + err.message);
-    }
-  }
+  const serverPath = path.join(__dirname, '../dist-server/server.cjs');
+  
+  console.log('🚀 Starting Aura Lab Engine from:', serverPath);
+  
+  // Fork the server into a separate process so it doesn't block the UI thread
+  serverProcess = fork(serverPath, [], {
+    env: { 
+      ...process.env, 
+      NODE_ENV: isDev ? 'development' : 'production',
+      ELECTRON_RUN_AS_NODE: '1'
+    },
+    stdio: 'inherit' // See server logs in the terminal/console
+  });
+
+  serverProcess.on('error', (err) => {
+    console.error('❌ Failed to start server process:', err);
+  });
+
+  serverProcess.on('exit', (code) => {
+    console.log(`📡 Server process exited with code ${code}`);
+  });
 }
 
 async function createWindow() {
@@ -24,42 +38,40 @@ async function createWindow() {
     height: 900,
     title: "Aura Lab - Laboratorio Fotográfico Pro",
     show: false,
+    backgroundColor: '#09090b',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js'),
-      devTools: true // Asegurar que DevTools esté habilitado
+      preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, '../public/favicon.ico')
   });
 
-  // Habilitar menú básico para poder refrescar y ver consola
-  mainWindow.setMenuBarVisibility(true);
+  // Habilitar menú básico
+  mainWindow.setMenuBarVisibility(false);
   
-  // Atajo para abrir consola: Ctrl+Shift+I
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.control && input.shift && input.key.toLowerCase() === 'i') {
-      mainWindow.webContents.openDevTools();
-      event.preventDefault();
-    }
-    if (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r')) {
-      mainWindow.reload();
-      event.preventDefault();
-    }
-  });
-
   const url = 'http://localhost:3000';
   
   // Custom loader logic: try to load until successful or timeout
   const tryLoad = async (attempts = 0) => {
     try {
-      await mainWindow.loadURL(url);
-      mainWindow.show();
+      // Usamos fetch de node para ver si el server responde
+      const response = await fetch(url + '/api/version');
+      if (response.ok) {
+        await mainWindow.loadURL(url);
+        mainWindow.show();
+        console.log(`✅ Aura Lab Engine conectado tras ${attempts} intentos`);
+      } else {
+        throw new Error("Server starting...");
+      }
     } catch (e) {
-      if (attempts < 20) { // Try for 10 seconds (20 * 500ms)
+      if (attempts < 60) { // Esperar hasta 30 segundos
         setTimeout(() => tryLoad(attempts + 1), 500);
       } else {
-        dialog.showErrorBox('Error de Conexión', 'No se pudo conectar con el motor de Aura Lab. Por favor, reinicia la aplicación.');
+        dialog.showErrorBox(
+          'Error de Motor', 
+          'No se pudo establecer conexión con el motor interno de Aura Lab.\n\nEsto puede suceder si un antivirus bloquea la conexión local o si el sistema de archivos está restringido.\n\nPor favor, intenta reiniciar la aplicación como administrador.'
+        );
       }
     }
   };
@@ -72,7 +84,9 @@ async function createWindow() {
 }
 
 app.whenReady().then(() => {
-  startExpressServer();
+  if (!isDev) {
+    startExpressServer();
+  }
   createWindow();
 
   app.on('activate', () => {
@@ -81,5 +95,10 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  if (serverProcess) serverProcess.kill();
   if (process.platform !== 'darwin') app.quit();
+});
+
+process.on('exit', () => {
+  if (serverProcess) serverProcess.kill();
 });
