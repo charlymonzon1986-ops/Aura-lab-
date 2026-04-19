@@ -1,17 +1,20 @@
 console.log("🚀 Server module loading...");
+process.on('uncaughtException', (err) => {
+  console.error('🔥 UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('🔥 UNHANDLED REJECTION:', reason);
+});
 import dotenv from "dotenv";
 dotenv.config();
+console.log("✅ Dotenv configured");
 
 import express from "express";
+console.log("✅ Express imported");
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { readFileSync } from "fs";
-
-// Load Firebase Config securely in ESM
-const firebaseConfig = JSON.parse(
-  readFileSync(new URL('./firebase-applet-config.json', import.meta.url), 'utf-8')
-);
 
 import cors from "cors";
 import multer from "multer";
@@ -38,7 +41,38 @@ try {
 }
 const APP_DIR = _detectedDirname;
 
+// Load Firebase Config securely
+let firebaseConfig: any;
+function loadFirebaseConfig() {
+  const configName = 'firebase-applet-config.json';
+  const pathsToTry = [
+    path.join(APP_DIR, configName),
+    path.join(APP_DIR, '..', configName),
+    path.join(process.cwd(), configName)
+  ];
+
+  for (const p of pathsToTry) {
+    try {
+      if (fs.existsSync(p)) {
+        console.log(`✅ Loading Firebase config from: ${p}`);
+        return JSON.parse(fs.readFileSync(p, 'utf-8'));
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+firebaseConfig = loadFirebaseConfig();
+if (!firebaseConfig) {
+  console.error("❌ CRITICAL: Firebase configuration file (firebase-applet-config.json) NOT FOUND.");
+  // We'll set a dummy config to avoid crash on top-level init, but routes will fail
+  firebaseConfig = { apiKey: 'dummy', authDomain: 'dummy', projectId: 'dummy' };
+} else {
+  console.log("✅ Firebase config loaded successfully");
+}
+
 // Initialize B2 Client
+console.log("📦 Initializing B2 Client...");
 const b2 = new B2({
   applicationKeyId: process.env.B2_KEY_ID || '',
   applicationKey: process.env.B2_APPLICATION_KEY || ''

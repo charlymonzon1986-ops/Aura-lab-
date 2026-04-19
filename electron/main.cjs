@@ -23,12 +23,20 @@ function startExpressServer() {
     stdio: ['inherit', 'pipe', 'pipe', 'ipc']
   });
 
+  serverProcess.stdout.setEncoding('utf8');
+  serverProcess.stderr.setEncoding('utf8');
+
+  let engineLogs = "";
   serverProcess.stdout.on('data', (data) => {
-    console.log(`[Engine] ${data.toString()}`);
+    const s = data.toString();
+    console.log(`[Engine] ${s}`);
+    engineLogs += "\n[INFO] " + s;
   });
 
   serverProcess.stderr.on('data', (data) => {
-    console.error(`[Engine Error] ${data.toString()}`);
+    const s = data.toString();
+    console.error(`[Engine Error] ${s}`);
+    engineLogs += "\n[ERROR] " + s;
   });
 
   serverProcess.on('error', (err) => {
@@ -39,7 +47,10 @@ function startExpressServer() {
   serverProcess.on('exit', (code, signal) => {
     console.log(`📡 Server process exited with code ${code} and signal ${signal}`);
     if (code !== 0 && code !== null) {
-      dialog.showErrorBox('Motor Detenido', `El motor de Aura Lab se cerró inesperadamente (Código: ${code}).\n\nEsto suele suceder por falta de permisos o puerto ocupado.`);
+      dialog.showErrorBox(
+        'Motor Detenido', 
+        `El motor de Aura Lab se cerró inesperadamente (Código: ${code}).\n\nLogs:\n${engineLogs || 'No hay logs disponibles.'}`
+      );
     }
   });
 }
@@ -80,10 +91,14 @@ async function createWindow() {
       if (attempts < 60) { // Esperar hasta 30 segundos
         setTimeout(() => tryLoad(attempts + 1), 500);
       } else {
-        dialog.showErrorBox(
-          'Error de Motor', 
-          'No se pudo establecer conexión con el motor interno de Aura Lab.\n\nEsto puede suceder si un antivirus bloquea la conexión local o si el sistema de archivos está restringido.\n\nPor favor, intenta reiniciar la aplicación como administrador.'
-        );
+        dialog.showMessageBoxSync({
+          type: 'error',
+          title: 'Error de Motor',
+          message: 'No se pudo establecer conexión con el motor interno de Aura Lab.',
+          detail: `Intentos: ${attempts}\nLogs del Motor:\n${engineLogs || 'Sin logs disponibles.'}\n\nPor favor, verifica si un antivirus está bloqueando el puerto 3000 o intenta reiniciar como administrador.`,
+          buttons: ['Aceptar']
+        });
+        app.quit();
       }
     }
   };
