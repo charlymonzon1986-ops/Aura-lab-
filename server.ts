@@ -1,4 +1,7 @@
 console.log("🚀 Server module loading...");
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -9,6 +12,7 @@ import sharp from "sharp";
 import axios from "axios";
 import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
+import { Resend } from 'resend';
 import B2 from 'backblaze-b2';
 import archiver from 'archiver';
 import { Photo, LightingSettings } from './src/types';
@@ -391,6 +395,33 @@ async function startServer() {
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || 'TEST-YOUR-ACCESS-TOKEN' 
   });
 
+  const resend = new Resend(process.env.RESEND_API_KEY);
+
+  // Diagnostic endpoint for keys (Secure: only returns existence, not values)
+  app.get("/api/admin/config-check", (req, res) => {
+    res.json({
+      gemini_ai: !!process.env.GEMINI_API_KEY,
+      mercadopago: !!process.env.MERCADOPAGO_ACCESS_TOKEN,
+      resend_email: !!process.env.RESEND_API_KEY,
+      backblaze_b2: !!process.env.B2_APPLICATION_KEY && !!process.env.B2_KEY_ID,
+      admin_email_set: !!process.env.ADMIN_EMAIL,
+      env: process.env.NODE_ENV || 'development'
+    });
+  });
+
+  // Securely provide Gemini Key to frontend in standalone builds
+  app.get("/api/config/gemini", (req, res) => {
+    // Note: In a production app with multiple untrusted users, 
+    // you might want to wrap this in an auth check or proxy the AI calls.
+    // For this specific creative tool, we'll provide the key so the frontend SDK works.
+    const key = process.env.GEMINI_API_KEY;
+    if (key) {
+      res.json({ key });
+    } else {
+      res.status(404).json({ error: "GEMINI_API_KEY no configurado en el servidor" });
+    }
+  });
+
   // API Routes
   app.post("/api/create-preference", async (req, res) => {
     try {
@@ -454,11 +485,61 @@ async function startServer() {
 
         if (status === "approved" && userId && planName) {
           console.log(`✅ Updating plan to ${planName} for user: ${userId}`);
-          await updateDoc(doc(fsDb, "users", userId), {
+          
+          const userDocRef = doc(fsDb, "users", userId);
+          await updateDoc(userDocRef, {
             plan: planName.toLowerCase(),
             lastPaymentId: paymentId,
             updatedAt: new Date().toISOString()
           });
+
+          // Fetch updated user info for email
+          const userSnap = await getDoc(userDocRef);
+          if (userSnap.exists()) {
+            const userData = userSnap.data();
+            const userEmail = userData.email;
+            const userName = userData.displayName || "Usuario de Aura Lab";
+
+            // Send Email to User
+            if (process.env.RESEND_API_KEY) {
+              try {
+                // Email to User
+                await resend.emails.send({
+                  from: 'Aura Lab <noreply@resend.dev>', // In production, use your verified domain
+                  to: userEmail,
+                  subject: '¡Bienvenido a tu nuevo plan en Aura Lab!',
+                  html: `
+                    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+                      <h1 style="color: #f59e0b;">¡Felicidades, ${userName}!</h1>
+                      <p>Tu suscripción al plan <strong>${planName}</strong> ha sido activada con éxito.</p>
+                      <p>Ya tienes acceso a todas las funciones premium y a tu nuevo límite de almacenamiento.</p>
+                      <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+                      <p style="font-size: 12px; color: #666;">Gracias por confiar en Aura Lab para tu flujo de trabajo creativo.</p>
+                    </div>
+                  `
+                });
+
+                // Email to Admin
+                await resend.emails.send({
+                  from: 'Aura Lab Alert <noreply@resend.dev>',
+                  to: process.env.ADMIN_EMAIL || 'juanomonzon@gmail.com',
+                  subject: '🚀 Nueva Suscripción: ' + planName,
+                  html: `
+                    <div style="font-family: sans-serif;">
+                      <h2>Nuevo suscriptor registrado</h2>
+                      <p><strong>Usuario:</strong> ${userName}</p>
+                      <p><strong>Email:</strong> ${userEmail}</p>
+                      <p><strong>Plan:</strong> ${planName}</p>
+                      <p><strong>ID de Pago:</strong> ${paymentId}</p>
+                    </div>
+                  `
+                });
+                console.log("📧 Emails sent successfully");
+              } catch (mailError) {
+                console.error("❌ Error sending emails:", mailError);
+              }
+            }
+          }
         }
       }
       

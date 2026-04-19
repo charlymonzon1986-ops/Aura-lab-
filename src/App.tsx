@@ -121,6 +121,15 @@ try {
   console.error("Critical: Failed to pre-initialize Gemini AI:", e);
 }
 
+// Function to dynamically refresh AI instance (useful for standalone/EXE where keys come from .env later)
+export const initializeAI = (key: string) => {
+  if (key && key !== "undefined" && key.trim() !== "") {
+    aiInstance = new GoogleGenAI({ apiKey: key });
+    return aiInstance;
+  }
+  return null;
+};
+
 const ai = aiInstance;
 
 interface ErrorBoundaryProps {
@@ -244,6 +253,25 @@ export default function App() {
   const imageRef = React.useRef<HTMLCanvasElement>(null);
   const imageStageRef = React.useRef<HTMLDivElement>(null);
   
+  // Sync AI configuration for standalone/EXE
+  React.useEffect(() => {
+    const syncAI = async () => {
+      // If AI is not initialized yet (normal in bundled apps)
+      if (!aiInstance) {
+        try {
+          const response = await axios.get('/api/config/gemini');
+          if (response.data.key) {
+            console.log("🤖 Dynamic AI Initialization Successful");
+            initializeAI(response.data.key);
+          }
+        } catch (e) {
+          console.warn("Stand-alone AI sync not available or key missing.");
+        }
+      }
+    };
+    syncAI();
+  }, []);
+
   // Check for updates
   React.useEffect(() => {
     const checkUpdate = async () => {
@@ -288,20 +316,13 @@ export default function App() {
       setUser(currentUser);
       if (currentUser) {
         try {
-          // Fetch Folders
-          const foldersQuery = query(collection(db, "folders"), where("userId", "==", currentUser.uid));
-          onSnapshot(foldersQuery, (snapshot) => {
-            const foldersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Folder));
-            setFolders(foldersList);
-          }, (error) => handleFirestoreError(error, OperationType.LIST, "folders"));
-
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
-          const userDoc = await getDoc(userDocRef);
           
           const adminEmails = ["juanomonzon@gmail.com", "charlymonzon.1986@gmail.com", "socia@example.com", "ruth1094@gmail.com"];
           const isAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
           
+          const userDoc = await getDoc(userDocRef);
           if (!userDoc.exists()) {
             const profile: UserProfile = {
               uid: currentUser.uid,
@@ -313,29 +334,55 @@ export default function App() {
               createdAt: new Date().toISOString()
             };
             await setDoc(userDocRef, profile);
-            setUserProfile(profile);
           } else {
             const data = userDoc.data() as UserProfile;
-            // Force admin status for test emails
             if (isAdmin && (data.role !== 'admin' || data.plan !== 'studio')) {
-              const updatedProfile = { ...data, role: 'admin' as const, plan: 'studio' as const };
               await updateDoc(userDocRef, { role: 'admin', plan: 'studio' });
-              setUserProfile(updatedProfile);
-            } else {
-              setUserProfile(data);
             }
           }
         } catch (error) {
-          handleFirestoreError(error, OperationType.GET, "users/" + currentUser.uid);
+          handleFirestoreError(error, OperationType.GET, "users/" + (currentUser?.uid || "unknown"));
         }
       } else {
         setUserProfile(null);
-        setPhotos([]); // No more samples
+        setPhotos([]); 
       }
       setIsAuthReady(true);
     });
     return () => unsubscribe();
   }, []);
+
+  // User Profile Reactive Listener
+  React.useEffect(() => {
+    if (!user) return;
+    
+    const userDocRef = doc(db, "users", user.uid);
+    const unsubscribe = onSnapshot(userDocRef, (doc) => {
+      if (doc.exists()) {
+        const profile = doc.data() as UserProfile;
+        setUserProfile(profile);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, "users/" + user.uid);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Folders Listener
+  React.useEffect(() => {
+    if (!user) {
+      setFolders([]);
+      return;
+    }
+    const foldersQuery = query(collection(db, "folders"), where("userId", "==", user.uid));
+    const unsubscribe = onSnapshot(foldersQuery, (snapshot) => {
+      const foldersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Folder));
+      setFolders(foldersList);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "folders"));
+    
+    return () => unsubscribe();
+  }, [user]);
 
   // Photos Listener
   React.useEffect(() => {
