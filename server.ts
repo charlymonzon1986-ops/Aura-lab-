@@ -322,7 +322,7 @@ async function startServer() {
   // Version check for desktop updates
   app.get("/api/version", (req, res) => {
     res.json({
-      latest: "1.0.1",
+      latest: "1.3.0",
       downloadUrl: "https://github.com/charlymonzon/aura-lab/actions", // Change logic when you have a stable URL
       mandatory: false
     });

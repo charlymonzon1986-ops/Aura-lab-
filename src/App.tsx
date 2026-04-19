@@ -374,7 +374,7 @@ function AppContent() {
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
           
-          const adminEmails = ["juanomonzon@gmail.com", "charlymonzon.1986@gmail.com", "socia@example.com", "ruth1094@gmail.com"];
+          const adminEmails = ["juanomonzon@gmail.com", "charlymonzon.1986@gmail.com", "ruth1094@gmail.com"];
           const isAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
           
           const userDoc = await getDoc(userDocRef);
@@ -1329,7 +1329,7 @@ function AppContent() {
       - blacks (95-105, 100 es neutro)`;
 
       const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-1.5-flash",
         contents: {
           parts: [
             { text: fullPrompt },
@@ -1522,7 +1522,7 @@ function AppContent() {
         throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
       }
       const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-1.5-flash",
         contents: {
           parts: [
             { text: prompt },
@@ -1901,7 +1901,7 @@ function AppContent() {
           
           <div className="flex items-center gap-2 md:gap-4">
             <Badge variant="outline" className="bg-zinc-900 border-zinc-800 text-zinc-500 font-mono text-[8px] md:text-[9px] px-1 md:px-2">
-              v1.3.0-alpha
+              v1.3.0
             </Badge>
           </div>
         </header>
@@ -3660,7 +3660,11 @@ function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
           <Button variant="ghost" size="sm" className="text-[10px] font-bold uppercase tracking-widest text-zinc-400" onClick={onBack}>
             Salir
           </Button>
-          <Button size="sm" className="bg-white text-black hover:bg-zinc-200 text-[10px] font-black uppercase tracking-widest px-6" onClick={() => toast.success("Próximamente...")}>
+          <Button 
+            size="sm" 
+            className="bg-white text-black hover:bg-zinc-200 text-[10px] font-black uppercase tracking-widest px-6" 
+            onClick={() => window.open(`/api/gallery/download/${slug}`, '_blank')}
+          >
             Descargar
           </Button>
         </div>
