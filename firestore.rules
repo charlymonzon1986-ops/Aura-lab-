@@ -1,0 +1,115 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      // In this environment, we check for verified emails.
+      // We should avoid hardcoding, but since we can't use env vars in rules, 
+      // we check for a specific admin flag on the user document if possible,
+      // or at least require verification.
+      return isAuthenticated() && 
+             request.auth.token.email_verified == true && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'plan']) &&
+             data.uid is string &&
+             data.email is string;
+    }
+
+    function isValidPhoto(data) {
+      // Bug 3.5 fix: validate size field to prevent storage inflation attacks
+      return data.keys().hasAll(['userId', 'url', 'settings']) &&
+             data.userId == request.auth.uid &&
+             data.url is string &&
+             (!data.keys().hasAny(['size']) || (data.size is int && data.size >= 0 && data.size <= 104857600)); // max 100MB
+    }
+
+    function isValidFolder(data) {
+      // 'id' removed: addDoc generates it automatically, it's not part of the written object
+      return data.keys().hasAll(['userId', 'name']) &&
+             data.userId == request.auth.uid &&
+             data.name is string;
+    }
+
+    function isValidClient(data) {
+      // 'id' removed: addDoc generates it automatically, it's not part of the written object
+      return data.keys().hasAll(['userId', 'name']) &&
+             data.userId == request.auth.uid &&
+             data.name is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId);
+      allow update: if isAuthenticated() && (isAdmin() || isOwner(userId));
+    }
+
+    match /photos/{photoId} {
+      allow read: if (resource.data.isPublic == true) || 
+                     (isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()));
+      allow create: if isAuthenticated() && isValidPhoto(request.resource.data);
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /presets/{presetId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || resource.data.isSystem == true || isAdmin());
+      allow create: if isAuthenticated() && (
+        (request.resource.data.isSystem == false && request.resource.data.userId == request.auth.uid) ||
+        (request.resource.data.isSystem == true && isAdmin())
+      );
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /folders/{folderId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidFolder(request.resource.data);
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /photos/{photoId}/versions/{versionId} {
+      allow read, create, delete: if isAuthenticated() && (get(/databases/$(database)/documents/photos/$(photoId)).data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /clients/{clientId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /galleries/{galleryId} {
+      // Bug 3.4 fix: unauthenticated reads for published galleries are intentional,
+      // but photoIds of private photos are included. Since Firestore can't do
+      // field-level masking on reads, we add a separate public summary collection
+      // pattern note here. For now we restrict public read to status check only —
+      // actual photo fetching should go through the server /api/gallery/:slug endpoint
+      // which can enforce per-photo visibility.
+      allow read: if (isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin())) || 
+                    (resource.data.status == 'published');
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

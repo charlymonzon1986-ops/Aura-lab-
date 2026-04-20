@@ -1,0 +1,109 @@
+{
+  "name": "aura-lab",
+  "private": true,
+  "version": "1.3.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "start": "node dist-server/server.js",
+    "build": "vite build && npm run build:server",
+    "preview": "vite preview",
+    "clean": "rm -rf dist dist-server",
+    "lint": "tsc --noEmit",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:build": "npm run build && electron-builder",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=dist-server/server.js --external:sharp --external:exiftool-vendored --external:firebase-admin --external:express --external:multer --external:cors --external:backblaze-b2 --external:mercadopago --external:resend --external:axios --external:archiver --external:dotenv --external:@google/generative-ai --resolve-extensions=.ts,.js"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.auralab.editor",
+    "productName": "Aura Lab",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-server/**/*",
+      "electron/**/*",
+      "package.json",
+      "firebase-applet-config.json",
+      "firebase-blueprint.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/exiftool-vendored.exe",
+        "to": "bin/exiftool",
+        "filter": [
+          "**/*"
+        ]
+      },
+      "firebase-applet-config.json"
+    ],
+    "npmRebuild": true,
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/sharp/**/*",
+      "**/node_modules/exiftool-vendored/**/*"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "public/favicon.ico"
+    }
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.3.0",
+    "@fontsource-variable/geist": "^5.2.8",
+    "@google-cloud/storage": "^7.19.0",
+    "@google/genai": "^1.29.0",
+    "@google/generative-ai": "^0.24.1",
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/archiver": "^7.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/multer": "^2.1.0",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^5.0.4",
+    "archiver": "^7.0.1",
+    "axios": "^1.15.0",
+    "backblaze-b2": "^1.7.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "exif-js": "^2.3.0",
+    "exiftool-vendored": "^35.15.1",
+    "express": "^4.22.1",
+    "firebase": "^12.11.0",
+    "firebase-admin": "^13.8.0",
+    "lucide-react": "^0.546.0",
+    "mercadopago": "^2.12.0",
+    "motion": "^12.23.24",
+    "multer": "^2.1.1",
+    "next-themes": "^0.4.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "resend": "^6.12.0",
+    "shadcn": "^4.2.0",
+    "sharp": "^0.34.5",
+    "sonner": "^2.0.7",
+    "sql.js": "^1.14.1",
+    "tailwind-merge": "^3.5.0",
+    "tsx": "^4.21.0",
+    "tw-animate-css": "^1.4.0",
+    "vite": "^6.2.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "electron": "^41.2.1",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.0",
+    "tailwindcss": "^4.1.14",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "wait-on": "^9.0.5"
+  }
+}
