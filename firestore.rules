@@ -31,23 +31,20 @@ service cloud.firestore {
     }
 
     function isValidPhoto(data) {
-      // Bug 3.5 fix: validate size field to prevent storage inflation attacks
       return data.keys().hasAll(['userId', 'url', 'settings']) &&
              data.userId == request.auth.uid &&
-             data.url is string &&
-             (!data.keys().hasAny(['size']) || (data.size is int && data.size >= 0 && data.size <= 104857600)); // max 100MB
+             data.url is string;
     }
 
     function isValidFolder(data) {
-      // 'id' removed: addDoc generates it automatically, it's not part of the written object
-      return data.keys().hasAll(['userId', 'name']) &&
+      return data.keys().hasAll(['id', 'userId', 'name']) &&
+             data.id is string &&
              data.userId == request.auth.uid &&
              data.name is string;
     }
 
     function isValidClient(data) {
-      // 'id' removed: addDoc generates it automatically, it's not part of the written object
-      return data.keys().hasAll(['userId', 'name']) &&
+      return data.keys().hasAll(['id', 'userId', 'name']) &&
              data.userId == request.auth.uid &&
              data.name is string;
     }
@@ -95,12 +92,6 @@ service cloud.firestore {
     }
 
     match /galleries/{galleryId} {
-      // Bug 3.4 fix: unauthenticated reads for published galleries are intentional,
-      // but photoIds of private photos are included. Since Firestore can't do
-      // field-level masking on reads, we add a separate public summary collection
-      // pattern note here. For now we restrict public read to status check only —
-      // actual photo fetching should go through the server /api/gallery/:slug endpoint
-      // which can enforce per-photo visibility.
       allow read: if (isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin())) || 
                     (resource.data.status == 'published');
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;

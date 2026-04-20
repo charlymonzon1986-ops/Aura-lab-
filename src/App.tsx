@@ -124,10 +124,7 @@ const fixImageUrlLocal = (url: string) => {
 // Safe initialization of Gemini AI
 let aiInstance: GoogleGenerativeAI | null = null;
 try {
-  // Use VITE_ prefix for web-mode, or fallback to process.env if in Electron/Node context
-  const key = (import.meta as any).env?.VITE_GEMINI_API_KEY || 
-              (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
-              
+  const key = process.env.GEMINI_API_KEY;
   if (key && key !== "undefined" && key.trim() !== "") {
     aiInstance = new GoogleGenerativeAI(key);
   }
@@ -353,7 +350,7 @@ function AppContent() {
     const checkUpdate = async () => {
       try {
         const response = await axios.get('/api/version');
-        if (response.data.latest !== "1.3.0") {
+        if (response.data.latest !== "1.0.1") {
           setLatestVersion(response.data.latest);
           setShowUpdateAvailable(true);
         }
@@ -395,11 +392,8 @@ function AppContent() {
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
           
-          // Bug 3.1 fix: never fall back to hardcoded emails — if VITE_ADMIN_EMAILS
-          // is not set, no one gets admin access rather than exposing real addresses.
-          const adminEmailsStr = (import.meta as any).env?.VITE_ADMIN_EMAILS || "";
-          if (!adminEmailsStr) console.warn("VITE_ADMIN_EMAILS not set — admin access disabled");
-          const adminEmails = adminEmailsStr.split(",").map((e: string) => e.trim().toLowerCase()).filter(Boolean);
+          const adminEmailsStr = (import.meta as any).env?.VITE_ADMIN_EMAILS || "juanomonzon@gmail.com,charlymonzon.1986@gmail.com,ruth1094@gmail.com";
+          const adminEmails = adminEmailsStr.split(",");
           const isAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
           
           const userDoc = await getDoc(userDocRef);
@@ -699,8 +693,14 @@ function AppContent() {
     try {
       const docRef = await addDoc(collection(db, "photos"), photoData);
       
-      // storageUsed is incremented by the server in /api/upload via Admin SDK.
-      // Do NOT increment here to avoid double-counting (fix for bug 5.1).
+      // Update user storage used (Issue 2.3 fix)
+      if (size > 0) {
+        const userRef = doc(db, "users", user.uid);
+        await updateDoc(userRef, {
+          storageUsed: increment(size),
+          updatedAt: serverTimestamp()
+        });
+      }
 
       console.log("Foto guardada en Firestore con ID:", docRef.id);
 
@@ -1347,8 +1347,8 @@ function AppContent() {
       }
 
       // Defer clean up
-      if (typeof lrcatDb.close === 'function') {
-        try { lrcatDb.close(); } catch (e) {}
+      if (typeof (db as any).close === 'function') {
+        try { (db as any).close(); } catch (e) {}
       }
     } catch (err) {
       console.error("Error al importar catálogo:", err);
@@ -1971,7 +1971,7 @@ function AppContent() {
           </Button>
           {isSidebarOpen && (
             <div className="mt-2 text-center">
-              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.3.0 PRO</span>
+              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.0.1 PRO</span>
             </div>
           )}
         </div>
@@ -1988,7 +1988,7 @@ function AppContent() {
             <Button 
               variant="link" 
               className="h-auto p-0 text-[10px] text-zinc-300 underline font-bold"
-              onClick={() => window.open('https://github.com/juanomonzon/aura-lab/releases', '_blank')}
+              onClick={() => window.open('https://github.com/charlymonzon/aura-lab/actions', '_blank')}
             >
               Descargar Actualización
             </Button>
@@ -3789,13 +3789,7 @@ function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
           setGallery({ ...gData, id: snap.docs[0].id });
           
           if (gData.photoIds && gData.photoIds.length > 0) {
-            // Bug 3.4 fix: only load photos explicitly marked as public,
-            // preventing private photo metadata from leaking via shared galleries.
-            const pQuery = query(
-              collection(db, "photos"),
-              where("__name__", "in", gData.photoIds.slice(0, 30)),
-              where("isPublic", "==", true)
-            );
+            const pQuery = query(collection(db, "photos"), where("__name__", "in", gData.photoIds.slice(0, 30)));
             const pSnap = await getDocs(pQuery);
             setPhotos(pSnap.docs.map(d => ({ ...d.data(), id: d.id } as Photo)));
           }

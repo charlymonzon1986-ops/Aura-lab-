@@ -64,24 +64,13 @@ async function startServer() {
   let fsDb: any;
   try {
     if (!admin.apps.length) {
-      // Bug 4.1 fix: search for serviceAccountKey.json in multiple locations
-      // so the EXE works locally without GOOGLE_APPLICATION_CREDENTIALS env var.
-      const saCandidates = [
-        process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
-        path.join(APP_DIR, 'serviceAccountKey.json'),
-        path.join(process.cwd(), 'serviceAccountKey.json'),
-        path.join(path.dirname(process.execPath), 'serviceAccountKey.json'),
-      ].filter(Boolean) as string[];
-
-      const saPath = saCandidates.find(p => fs.existsSync(p));
-      if (saPath) {
-        console.log('🔑 Firebase: using service account from', saPath);
+      const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+      if (saPath && fs.existsSync(saPath)) {
         admin.initializeApp({
           credential: admin.credential.cert(JSON.parse(fs.readFileSync(saPath, 'utf-8'))),
           projectId: fbConfig.projectId
         });
       } else {
-        console.warn('⚠️ Firebase: no serviceAccountKey.json found — using projectId only (works on GCP, mock fallback on local EXE). Place serviceAccountKey.json next to the app to enable full Admin SDK.');
         admin.initializeApp({ projectId: fbConfig.projectId });
       }
     }
@@ -219,24 +208,14 @@ async function startServer() {
       const data = await downloadFromB2(req.params.fileName);
       res.setHeader('Cache-Control', 'public, max-age=31536000');
       const ext = path.extname(req.params.fileName).toLowerCase();
-      const mimes: any = { 
-        '.jpg': 'image/jpeg', 
-        '.jpeg': 'image/jpeg', 
-        '.png': 'image/png', 
-        '.webp': 'image/webp',
-        '.gif': 'image/gif',
-        '.avif': 'image/avif',
-        '.svg': 'image/svg+xml'
-      };
+      const mimes: any = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
       if (mimes[ext]) res.setHeader('Content-Type', mimes[ext]);
-      else res.setHeader('Content-Type', 'application/octet-stream');
       res.send(Buffer.from(data));
     } catch { res.status(404).send("Not found"); }
   });
 
   const mp = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || 'TEST' });
-  const resendApiKey = process.env.RESEND_API_KEY;
-  const resend = resendApiKey ? new Resend(resendApiKey) : null;
+  const resend = new Resend(process.env.RESEND_API_KEY);
 
   app.get("/api/admin/config-check", (req, res) => {
     res.json({ gemini: !!process.env.GEMINI_API_KEY, mp: !!process.env.MERCADOPAGO_ACCESS_TOKEN, resend: !!process.env.RESEND_API_KEY, b2: !!process.env.B2_APPLICATION_KEY, prod: isProd });
@@ -271,23 +250,8 @@ async function startServer() {
         const p = response.data;
         if (p.status === "approved") {
           const userId = p.external_reference;
-          let plan = 'free';
-          
-          // More robust plan detection
-          const itemPlan = p.additional_info?.items?.[0]?.id?.toLowerCase();
-          const descPlan = p.description?.toLowerCase().split('plan ')[1];
-          
-          if (itemPlan && ['pro', 'studio'].includes(itemPlan)) {
-            plan = itemPlan;
-          } else if (descPlan && ['pro', 'studio'].some(pl => descPlan.includes(pl))) {
-            plan = ['pro', 'studio'].find(pl => descPlan.includes(pl)) || 'free';
-          }
-          
-          await fsDb.collection("users").doc(userId).update({ 
-            plan, 
-            lastPaymentId: paymentId, 
-            updatedAt: new Date().toISOString() 
-          });
+          const plan = (p.additional_info?.items?.[0]?.id || p.description?.split('Plan ')[1] || 'free').toLowerCase();
+          await fsDb.collection("users").doc(userId).update({ plan, lastPaymentId: paymentId, updatedAt: new Date().toISOString() });
         }
       }
       res.sendStatus(200);
@@ -321,81 +285,14 @@ async function startServer() {
         if (ph.url.startsWith('/api/b2-proxy/')) b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
         else b = (await axios.get(ph.url, { responseType: 'arraybuffer' })).data;
         const s = ph.settings;
-        let pipe = sharp(b).modulate({
-          brightness: (s.brightness || 100) / 100,
-          saturation: (s.saturation || 100) / 100,
-        });
-        // exposure (EV stops encoded as -100..+100 range → multiply by 2^(val/100))
-        if (s.exposure && s.exposure !== 0) {
-          const factor = Math.pow(2, s.exposure / 100);
-          pipe = pipe.linear(factor, 0);
-        }
-        // contrast
-        if (s.contrast && s.contrast !== 100) pipe = pipe.linear((s.contrast || 100) / 100, -(s.contrast || 100) + 100);
-        // highlights (positive brightens highlights, negative darkens them)
-        if (s.highlights && s.highlights !== 0) pipe = pipe.linear(1, (s.highlights / 200) * 255);
-        // shadows (positive lifts shadows)
-        if (s.shadows && s.shadows !== 0) pipe = pipe.linear(1, (s.shadows / 200) * 255);
-        // warmth: shift white balance toward warm (orange) or cool (blue)
-        if (s.warmth && s.warmth !== 0) {
-          const w = s.warmth / 100;
-          pipe = pipe.tint(w > 0
-            ? { r: Math.round(255 * (1 + w * 0.3)), g: 255, b: Math.round(255 * (1 - w * 0.3)) }
-            : { r: Math.round(255 * (1 + w * 0.3)), g: 255, b: Math.round(255 * (1 - w * 0.3)) }
-          );
-        }
-        // sepia overlay via tint (sepia 0-100)
-        if (s.sepia && s.sepia > 0) {
-          const t = s.sepia / 100;
-          pipe = pipe.tint({ r: Math.round(112 * t + 255 * (1 - t)), g: Math.round(66 * t + 255 * (1 - t)), b: Math.round(20 * t + 255 * (1 - t)) });
-        }
-        // sharpening
-        if (s.sharpening && s.sharpening > 0) pipe = pipe.sharpen({ sigma: s.sharpening / 20 });
-        // noise reduction
-        if (s.noiseReduction && s.noiseReduction > 0) pipe = pipe.blur(s.noiseReduction / 10);
-        // grain: slight blur as poor-man's grain softening (real grain needs canvas)
-        // vignette and lut require canvas/custom compositing — not supported by sharp natively
+        let pipe = sharp(b).modulate({ brightness: (s.brightness || 100) / 100, saturation: (s.saturation || 100) / 100 });
+        if (s.contrast !== 100) pipe = pipe.linear((s.contrast || 100) / 100, -(s.contrast || 100) + 100);
+        if (s.sharpening > 0) pipe = pipe.sharpen({ sigma: s.sharpening / 20 });
+        if (s.noiseReduction > 0) pipe = pipe.blur(s.noiseReduction / 10);
         arc.append(await pipe.jpeg({ quality }).toBuffer(), { name: `${ph.title || 'photo'}-${ph.id.slice(0, 5)}.jpg` });
       } catch {}
     }
     arc.finalize();
-  });
-
-  // Bug 5.3 fix: endpoint was missing, button returned 404
-  app.get("/api/gallery/download/:slug", async (req, res) => {
-    const { slug } = req.params;
-    try {
-      const snap = await fsDb.collection("galleries")
-        .where("slug", "==", slug)
-        .where("status", "==", "published")
-        .limit(1)
-        .get();
-      if (snap.empty) return res.status(404).json({ error: "Gallery not found" });
-      const gallery = snap.docs[0].data();
-      const photoIds: string[] = gallery.photoIds || [];
-      const arc = archiver("zip", { zlib: { level: 9 } });
-      res.attachment(`gallery-${slug}.zip`);
-      arc.pipe(res);
-      for (const photoId of photoIds) {
-        try {
-          const photoDoc = await fsDb.collection("photos").doc(photoId).get();
-          if (!photoDoc.exists) continue;
-          const photo = photoDoc.data()!;
-          let b: Buffer;
-          if (photo.url.startsWith("/api/b2-proxy/"))
-            b = await downloadFromB2(decodeURIComponent(photo.url.split("/api/b2-proxy/")[1]));
-          else
-            b = (await axios.get(photo.url, { responseType: "arraybuffer" })).data;
-          arc.append(b, { name: `${photo.title || photoId}.jpg` });
-        } catch (e) {
-          console.warn(`Skipping photo ${photoId}:`, e);
-        }
-      }
-      await arc.finalize();
-    } catch (e) {
-      console.error("Gallery download error:", e);
-      if (!res.headersSent) res.status(500).json({ error: "Download failed" });
-    }
   });
 
   app.post("/api/delete-file", async (req, res) => {

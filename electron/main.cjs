@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
 const isDev = !app.isPackaged;
 
@@ -73,27 +73,12 @@ async function createWindow() {
   // Habilitar menú básico
   mainWindow.setMenuBarVisibility(false);
   
-  // Bug 1.1 fix: in dev mode the Express server is never started, so polling
-  // localhost:3000 just causes a 30-second silent timeout. Load the Vite dev
-  // server (port 5173) directly instead.
-  if (isDev) {
-    const devUrl = 'http://localhost:5173';
-    try {
-      await mainWindow.loadURL(devUrl);
-      mainWindow.show();
-      console.log('✅ Dev mode: loaded Vite dev server at', devUrl);
-    } catch (e) {
-      dialog.showErrorBox('Error Dev Mode', `No se pudo conectar al servidor de Vite en ${devUrl}.\nAsegurate de correr "npm run dev" antes de abrir Electron.`);
-      app.quit();
-    }
-    return;
-  }
-
   const url = 'http://localhost:3000';
-
+  
   // Custom loader logic: try to load until successful or timeout
   const tryLoad = async (attempts = 0) => {
     try {
+      // Usamos fetch de node para ver si el server responde
       const response = await fetch(url + '/api/version');
       if (response.ok) {
         await mainWindow.loadURL(url);
@@ -144,10 +129,3 @@ app.on('window-all-closed', () => {
 process.on('exit', () => {
   if (serverProcess) serverProcess.kill();
 });
-
-// Bug 1.4 fix: register IPC handlers so preload channels work
-const { version } = require('../package.json');
-ipcMain.handle('app:get-version', () => version);
-ipcMain.handle('dialog:save', (_e, options) => dialog.showSaveDialog(options));
-ipcMain.handle('dialog:open', (_e, options) => dialog.showOpenDialog(options));
-ipcMain.handle('shell:open-external', (_e, url) => shell.openExternal(url));
