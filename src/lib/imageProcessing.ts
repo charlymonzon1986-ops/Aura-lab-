@@ -53,24 +53,24 @@ export function getFilterString(settings: LightingSettings): string {
   // 4. Saturation & Vibrance
   const saturationAdj = (saturation / 100) * (1 + (vibrance - 100) / 200);
   
-  // 5. Highlights & Shadows (Simulated with brightness/contrast tweaks)
-  const highAdj = (highlights - 100) / 5;
-  const shadAdj = (shadows - 100) / 5;
+  // 5. Highlights & Shadows (Increased impact for better visibility)
+  const highAdj = (highlights - 100) / 2.5;
+  const shadAdj = (shadows - 100) / 2.5;
   
   // 6. Whites & Blacks
-  const whiteAdj = (whites - 100) / 4;
-  const blackAdj = (blacks - 100) / 4;
+  const whiteAdj = (whites - 100) / 2;
+  const blackAdj = (blacks - 100) / 2;
 
-  // 7. Clarity & Texture
-  const clarityAdj = clarity / 1.5;
-  const textureAdj = texture / 2;
+  // 7. Clarity & Texture (Balanced with others)
+  const clarityAdj = clarity / 1.25;
+  const textureAdj = texture / 1.5;
 
   // 8. Dehaze
-  const dehazeAdj = dehaze / 1.5;
+  const dehazeAdj = dehaze / 1.25;
 
   // Final combined values for CSS filters
-  const finalBrightness = (100 * exposureAdj * brightnessAdj) + highAdj + shadAdj + whiteAdj + blackAdj - (dehaze / 4);
-  const finalContrast = contrast + clarityAdj + textureAdj + (dehaze * 0.8) + (highAdj / 2) - (shadAdj / 2);
+  const finalBrightness = (100 * exposureAdj * brightnessAdj) + highAdj + (shadAdj / 1.5) + whiteAdj + blackAdj - (dehaze / 6);
+  const finalContrast = contrast + clarityAdj + textureAdj + (dehazeAdj * 0.8);
   const finalSaturation = saturationAdj * 100 + (dehaze / 2);
 
   // Warmth & Tint

@@ -36,7 +36,7 @@ export async function renderImageToCanvas(
       
       // Draw Original on left (Scissor is bottom-left based)
       gl.scissor(0, 0, splitX, drawHeight);
-      renderer.render({ ...settings, exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, warmth: 100, tint: 100, highlights: 100, shadows: 100, whites: 100, blacks: 100, vignette: 0, grain: 0 }, drawWidth, drawHeight);
+      renderer.render({ ...settings, exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null }, drawWidth, drawHeight);
       
       // Draw Adjusted on right
       gl.scissor(splitX, 0, drawWidth - splitX, drawHeight);
@@ -82,6 +82,27 @@ export async function renderImageToCanvas(
     ctx.scale(settings.flipX ? -1 : 1, settings.flipY ? -1 : 1);
     ctx.translate(-drawWidth / 2, -drawHeight / 2);
     ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, drawWidth, drawHeight);
+    
+    // Add Color Tints in 2D fallback
+    if (settings.shadowTint && settings.shadowTint !== "transparent") {
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.fillStyle = settings.shadowTint;
+      ctx.globalAlpha = 0.6;
+      ctx.fillRect(0, 0, drawWidth, drawHeight);
+    }
+    if (settings.midtoneTint && settings.midtoneTint !== "transparent") {
+      ctx.globalCompositeOperation = 'overlay';
+      ctx.fillStyle = settings.midtoneTint;
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(0, 0, drawWidth, drawHeight);
+    }
+    if (settings.highlightTint && settings.highlightTint !== "transparent") {
+      ctx.globalCompositeOperation = 'color';
+      ctx.fillStyle = settings.highlightTint;
+      ctx.globalAlpha = 0.4;
+      ctx.fillRect(0, 0, drawWidth, drawHeight);
+    }
+
     ctx.restore();
 
     if (isComparing) ctx.restore();

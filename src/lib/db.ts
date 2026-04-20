@@ -1,25 +1,36 @@
-import initSqlJs from 'sql.js';
+// Using global initSqlJs from index.html script tag
+// import initSqlJs from 'sql.js';
 
 let db: any = null;
 
 export async function initLocalDB() {
   if (db) return db;
   
-  const SQL = await initSqlJs({
-    locateFile: file => {
-      // Try local first, then fallback to unpkg CDN
-      return `/sqljs/${file}`;
-    }
-  }).catch(err => {
-    console.warn("Local WASM failed, trying CDN fallback...", err);
-    return initSqlJs({
-      locateFile: file => `https://unpkg.com/sql.js@1.14.1/dist/${file}`
-    });
+  const initSqlJsGlobal = (window as any).initSqlJs;
+  if (!initSqlJsGlobal) {
+    throw new Error("sql.js not loaded from script tag");
+  }
+
+  const SQL = await initSqlJsGlobal({
+    locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`
   });
   
-  db = new SQL.Database();
+  // Issue 5.3 Fix: Try to load from localStorage
+  try {
+    const saved = localStorage.getItem('aura_local_db');
+    if (saved) {
+      const buffer = new Uint8Array(saved.split(',').map(Number));
+      db = new SQL.Database(buffer);
+      console.log("💾 Local DB loaded from persistence");
+    } else {
+      db = new SQL.Database();
+    }
+  } catch (e) {
+    console.warn("Failed to load local DB, starting fresh", e);
+    db = new SQL.Database();
+  }
   
-  // Create tables
+  // Create tables if they don't exist
   db.run(`
     CREATE TABLE IF NOT EXISTS photos (
       id TEXT PRIMARY KEY,
@@ -35,9 +46,20 @@ export async function initLocalDB() {
   return db;
 }
 
+function persistDB() {
+  if (!db) return;
+  try {
+    const data = db.export();
+    localStorage.setItem('aura_local_db', data.toString());
+  } catch (e) {
+    console.error("Failed to persist local DB", e);
+  }
+}
+
 export async function savePhotoLocally(id: string, photoData: any) {
   const database = await initLocalDB();
   database.run("INSERT OR REPLACE INTO photos (id, data) VALUES (?, ?)", [id, JSON.stringify(photoData)]);
+  persistDB();
 }
 
 export async function getLocalPhotos() {
@@ -50,4 +72,5 @@ export async function getLocalPhotos() {
 export async function clearLocalDB() {
   const database = await initLocalDB();
   database.run("DELETE FROM photos");
+  persistDB();
 }

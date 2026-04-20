@@ -14,10 +14,14 @@ service cloud.firestore {
     }
     
     function isAdmin() {
-      let adminEmails = ["juanomonzon@gmail.com", "charlymonzon.1986@gmail.com", "ruth1094@gmail.com"];
+      // In this environment, we check for verified emails.
+      // We should avoid hardcoding, but since we can't use env vars in rules, 
+      // we check for a specific admin flag on the user document if possible,
+      // or at least require verification.
       return isAuthenticated() && 
              request.auth.token.email_verified == true && 
-             request.auth.token.email.lower() in adminEmails;
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
     function isValidUser(data) {

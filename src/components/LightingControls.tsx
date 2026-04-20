@@ -8,7 +8,7 @@ import {
   FlipVertical, Scissors, CloudFog, Waves, Box, Focus, Ghost,
   Copy, ClipboardPaste
 } from "lucide-react";
-import { LightingSettings, PlanType } from "@/src/types";
+import { LightingSettings, PlanType, DEFAULT_SETTINGS } from "@/src/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getFilterString } from "@/src/lib/imageProcessing";
@@ -48,10 +48,10 @@ const ControlItem = React.memo(function ControlItem({
 }: ControlItemProps) {
   const showVal = displayValue || (
     typeof value === 'number' 
-      ? (value > 0 && !['brightness', 'contrast', 'saturation'].includes(settingKey as string)
-          ? `+${value.toFixed(1)}`
-          : value.toFixed(1))
-      : '0.0'
+      ? (value > 0 && !['brightness', 'contrast', 'saturation', 'warmth', 'tint'].includes(settingKey as string)
+          ? `+${value.toFixed(settingKey === 'exposure' ? 2 : 1)}`
+          : value.toFixed(settingKey === 'exposure' ? 2 : 0))
+      : '0'
   );
 
   const handleChange = React.useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -62,10 +62,22 @@ const ControlItem = React.memo(function ControlItem({
     if (!locked) onSliderCommit(settingKey, parseFloat((e.target as HTMLInputElement).value));
   }, [locked, settingKey, onSliderCommit]);
 
+  const handleDoubleClick = React.useCallback(() => {
+    if (!locked) {
+      const defaultValue = (DEFAULT_SETTINGS as any)[settingKey];
+      onSliderChange(settingKey, defaultValue);
+      onSliderCommit(settingKey, defaultValue);
+    }
+  }, [locked, settingKey, onSliderChange, onSliderCommit]);
+
   return (
     <div className={`space-y-2 ${locked ? 'opacity-40 select-none pointer-events-none' : ''} relative transition-opacity duration-300`}>
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-zinc-400">
+        <div 
+          className="flex items-center gap-2 text-zinc-400 cursor-pointer active:scale-95 transition-transform"
+          onDoubleClick={handleDoubleClick}
+          title="Doble clic para restablecer"
+        >
           <Icon className="w-3.5 h-3.5" />
           <Label className="text-[10px] font-bold uppercase tracking-wider">{label}</Label>
           {locked && <Lock className="w-3 h-3 text-amber-500 ml-1" />}

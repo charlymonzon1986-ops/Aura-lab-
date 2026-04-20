@@ -1,7 +1,7 @@
 import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { 
   X,
   LayoutGrid, 
@@ -61,7 +61,8 @@ import {
   Building2,
   Calendar,
   MoreVertical,
-  Check
+  Check,
+  Menu
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -121,11 +122,11 @@ const fixImageUrlLocal = (url: string) => {
 };
 
 // Safe initialization of Gemini AI
-let aiInstance: GoogleGenAI | null = null;
+let aiInstance: GoogleGenerativeAI | null = null;
 try {
   const key = process.env.GEMINI_API_KEY;
   if (key && key !== "undefined" && key.trim() !== "") {
-    aiInstance = new GoogleGenAI({ apiKey: key });
+    aiInstance = new GoogleGenerativeAI(key);
   }
 } catch (e) {
   console.error("Critical: Failed to pre-initialize Gemini AI:", e);
@@ -134,13 +135,14 @@ try {
 // Function to dynamically refresh AI instance (useful for standalone/EXE where keys come from .env later)
 export const initializeAI = (key: string) => {
   if (key && key !== "undefined" && key.trim() !== "") {
-    aiInstance = new GoogleGenAI({ apiKey: key });
+    aiInstance = new GoogleGenerativeAI(key);
     return aiInstance;
   }
   return null;
 };
 
-const ai = aiInstance;
+// Constant reference was removed here (Issue 2.1 fix)
+// We will use aiInstance directly in functions to ensure it has the latest value
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -228,6 +230,7 @@ function AppContent() {
   const [newGalleryData, setNewGalleryData] = React.useState({ title: '', clientId: '' });
   const [selectedClientId, setSelectedClientId] = React.useState<string | null>(null);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
+  const [showEditorControls, setShowEditorControls] = React.useState(true);
   const [previewSettings, setPreviewSettings] = React.useState<LightingSettings | null>(null);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
   const [copiedSettings, setCopiedSettings] = React.useState<LightingSettings | null>(null);
@@ -243,6 +246,7 @@ function AppContent() {
   const [newPresetPlan, setNewPresetPlan] = React.useState<PlanType>("free");
   const [history, setHistory] = React.useState<Record<string, LightingSettings[]>>({});
   const [totalStorageUsed, setTotalStorageUsed] = React.useState(0);
+  const [clientSearchQuery, setClientSearchQuery] = React.useState("");
   const [isUploading, setIsUploading] = React.useState(false);
   const [uploadProgress, setUploadProgress] = React.useState<number>(0);
   const [clients, setClients] = React.useState<Client[]>([]);
@@ -257,10 +261,24 @@ function AppContent() {
       totalFolders: folders.length,
       totalClients: clients.length,
       totalGalleries: galleries.length,
-      storageUsed: photos.reduce((acc, p) => acc + (p.size || 0), 0),
+      storageUsed: userProfile?.storageUsed || 0,
       capacity: userProfile?.plan === 'studio' ? STORAGE_LIMITS.studio : userProfile?.plan === 'pro' ? STORAGE_LIMITS.pro : STORAGE_LIMITS.free
     };
   }, [photos, folders, clients, galleries, userProfile?.plan]);
+
+  const filteredClients = React.useMemo(() => {
+    if (!clientSearchQuery) return clients;
+    const q = clientSearchQuery.toLowerCase();
+    return clients.filter(c => 
+      c.name?.toLowerCase().includes(q) || 
+      c.email?.toLowerCase().includes(q)
+    );
+  }, [clients, clientSearchQuery]);
+
+  const selectedClient = React.useMemo(() => 
+    clients.find(c => c.id === selectedClientId),
+    [clients, selectedClientId]
+  );
 
   const [searchQuery, setSearchQuery] = React.useState("");
   const [zoom, setZoom] = React.useState(0.8);
@@ -374,7 +392,8 @@ function AppContent() {
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
           
-          const adminEmails = ["juanomonzon@gmail.com", "charlymonzon.1986@gmail.com", "ruth1094@gmail.com"];
+          const adminEmailsStr = (import.meta as any).env?.VITE_ADMIN_EMAILS || "juanomonzon@gmail.com,charlymonzon.1986@gmail.com,ruth1094@gmail.com";
+          const adminEmails = adminEmailsStr.split(",");
           const isAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
           
           const userDoc = await getDoc(userDocRef);
@@ -673,20 +692,20 @@ function AppContent() {
 
     try {
       const docRef = await addDoc(collection(db, "photos"), photoData);
+      
+      // Update user storage used (Issue 2.3 fix)
+      if (size > 0) {
+        const userRef = doc(db, "users", user.uid);
+        await updateDoc(userRef, {
+          storageUsed: increment(size),
+          updatedAt: serverTimestamp()
+        });
+      }
 
       console.log("Foto guardada en Firestore con ID:", docRef.id);
 
-      // Update user storage usage
-      try {
-        const userDocRef = doc(db, "users", user.uid);
-        await updateDoc(userDocRef, {
-          storageUsed: increment(size)
-        });
-      } catch (userUpdateErr) {
-        console.warn("Error al actualizar espacio usado (no crítico):", userUpdateErr);
-      }
-
       toast.success("Foto guardada en tu galería privada");
+      return docRef.id;
     } catch (error: any) {
       console.error("Error detallado al guardar en Firestore:", error);
       
@@ -736,6 +755,12 @@ function AppContent() {
   const handleCreateGallery = async () => {
     if (!user || !newGalleryData.title || selectedPhotoIds.length === 0) {
       toast.error("Título y fotos seleccionadas son necesarios");
+      return;
+    }
+
+    // Issue 2.5: Validate clientId
+    if (!newGalleryData.clientId || newGalleryData.clientId === 'none') {
+      toast.error("Debes seleccionar un cliente para la galería");
       return;
     }
 
@@ -829,11 +854,17 @@ function AppContent() {
       const { url, thumbnailUrl } = response.data;
       console.log("Subida a B2 exitosa:", { url, thumbnailUrl });
 
-      await addPhoto(url, file.name, file.size, undefined, thumbnailUrl);
+      const newId = await addPhoto(url, file.name, file.size, undefined, thumbnailUrl);
       
       setIsUploading(false);
       setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      
+      if (newId) {
+        setSelectedPhotoId(newId);
+        setActiveTab('editor');
+      }
+      
       toast.success("Foto subida correctamente");
 
     } catch (error: any) {
@@ -903,6 +934,15 @@ function AppContent() {
           [id]: [...photoHistory, newSettings].slice(-20)
         };
       });
+
+      // Save to Firestore is now handled by the debounced useEffect (Issue 2.2 fix)
+      /* 
+      const photoRef = doc(db, "photos", id);
+      updateDoc(photoRef, { 
+        settings: newSettings,
+        updatedAt: serverTimestamp() 
+      }).catch(err => console.error("Error auto-saving settings:", err));
+      */
 
       return prev.map(p => p.id === id ? { ...p, settings: newSettings } : p);
     });
@@ -999,6 +1039,28 @@ function AppContent() {
     return () => stage.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
 
+  // Shortcut for ESC and Sidebar
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // ESC to deselect or close editor
+      if (e.key === 'Escape') {
+        if (selectedPhotoId) {
+          setSelectedPhotoId(null);
+        } else if (selectedPhotoIds.length > 0) {
+          setSelectedPhotoIds([]);
+        }
+      }
+      
+      // Shortcut to toggle sidebar (Alt + S)
+      if (e.altKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        setIsSidebarOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedPhotoId, selectedPhotoIds]);
+
   const deletePhoto = async (id: string) => {
     if (!user || !userProfile) {
       console.warn("Delete aborted: No user or profile");
@@ -1023,7 +1085,12 @@ function AppContent() {
       // 2. Delete from Storage (Server/B2)
       if (url && !url.startsWith('blob:')) {
         try {
-          await axios.post("/api/delete-file", { url, thumbnailUrl });
+          await axios.post("/api/delete-file", { 
+            url, 
+            thumbnailUrl,
+            userId: user.uid,
+            photoSize: photoSize
+          });
           console.log("Archivo eliminado del servidor/B2 correctamente");
         } catch (localErr) {
           console.warn("Error al eliminar archivo del servidor/B2:", localErr);
@@ -1041,12 +1108,6 @@ function AppContent() {
         }
       }
 
-      // 4. Update storage used in profile
-      const userDocRef = doc(db, "users", user.uid);
-      await updateDoc(userDocRef, {
-        storageUsed: increment(-photoSize)
-      });
-
       setSelectedPhotoId(null);
       setPhotos(prev => prev.filter(p => p.id !== id));
       toast.success("Foto eliminada");
@@ -1054,6 +1115,49 @@ function AppContent() {
       console.error("Error al eliminar la foto:", error);
       toast.error("Error al eliminar la foto");
     }
+  };
+
+  const bulkDeletePhotos = async () => {
+    if (selectedPhotoIds.length === 0) return;
+    
+    // Issue 2.4 fix: Using toast action instead of window.confirm
+    toast("¿Eliminar selección?", {
+      description: `Se eliminarán permanentemente ${selectedPhotoIds.length} fotos.`,
+      action: {
+        label: "Eliminar",
+        onClick: async () => {
+          const count = selectedPhotoIds.length;
+          const toastId = toast.loading(`Eliminando ${count} fotos...`);
+          
+          try {
+            const targets = photos.filter(p => selectedPhotoIds.includes(p.id));
+            
+            await Promise.all(targets.map(async (photo) => {
+              try {
+                await deleteDoc(doc(db, "photos", photo.id));
+                if (photo.url && !photo.url.startsWith('blob:')) {
+                  await axios.post("/api/delete-file", { 
+                    url: photo.url, 
+                    thumbnailUrl: (photo as any).thumbnailUrl,
+                    userId: user?.uid,
+                    photoSize: (photo as any).size || 0
+                  });
+                }
+              } catch (err) {
+                console.warn(`Error deleting photo ${photo.id}:`, err);
+              }
+            }));
+
+            setPhotos(prev => prev.filter(p => !selectedPhotoIds.includes(p.id)));
+            setSelectedPhotoIds([]);
+            toast.success(`${count} fotos eliminadas correctamente`, { id: toastId });
+          } catch (error) {
+            console.error("Error in bulk delete:", error);
+            toast.error("Error al eliminar algunas fotos", { id: toastId });
+          }
+        }
+      }
+    });
   };
 
   const saveCurrentAsPreset = () => {
@@ -1213,25 +1317,22 @@ function AppContent() {
       toast.loading("Leyendo catálogo de Lightroom...", { id: "lrcat-import" });
       
       // Load sql.js
-      const initSqlJs = (window as any).initSqlJs;
-      if (!initSqlJs) {
-        // Try to load it dynamically if not present
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/sql-wasm.js';
-        document.head.appendChild(script);
-        await new Promise((resolve) => script.onload = resolve);
+      const initSqlJsGlobal = (window as any).initSqlJs;
+      if (!initSqlJsGlobal) {
+        toast.error("sql.js no se ha cargado correctamente.");
+        return;
       }
 
-      const SQL = await (window as any).initSqlJs({
-        locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.12.0/${file}`
+      const SQL = await initSqlJsGlobal({
+        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`
       });
 
       const arrayBuffer = await file.arrayBuffer();
-      const db = new SQL.Database(new Uint8Array(arrayBuffer));
+      const lrcatDb = new SQL.Database(new Uint8Array(arrayBuffer));
 
       // Query for images
       // Lightroom schema: AgLibraryFile contains filenames, Adobe_images contains metadata
-      const res = db.exec("SELECT baseName, extension FROM AgLibraryFile LIMIT 100");
+      const res = lrcatDb.exec("SELECT baseName, extension FROM AgLibraryFile LIMIT 100");
       
       if (res.length > 0) {
         const files = res[0].values.map(v => `${v[0]}.${v[1]}`);
@@ -1245,7 +1346,10 @@ function AppContent() {
         toast.error("No se encontraron imágenes en este catálogo.", { id: "lrcat-import" });
       }
 
-      db.close();
+      // Defer clean up
+      if (typeof (db as any).close === 'function') {
+        try { (db as any).close(); } catch (e) {}
+      }
     } catch (err) {
       console.error("Error al importar catálogo:", err);
       toast.error("Error al leer el catálogo de Lightroom. Asegúrate de que sea un archivo .lrcat válido.", { id: "lrcat-import" });
@@ -1296,7 +1400,7 @@ function AppContent() {
       const base64Content = await base64Promise;
 
       console.log("Sending request to Gemini for Smart Enhance...");
-      if (!ai) {
+      if (!aiInstance) {
         throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
       }
 
@@ -1328,33 +1432,30 @@ function AppContent() {
       - whites (85-100, 100 es neutro)
       - blacks (95-105, 100 es neutro)`;
 
-      const result = await ai.models.generateContent({
+      const model = aiInstance.getGenerativeModel({ 
         model: "gemini-1.5-flash",
-        contents: {
-          parts: [
-            { text: fullPrompt },
-            {
-              inlineData: {
-                mimeType: blob.type || "image/jpeg",
-                data: base64Content
-              }
-            }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json"
-        }
+        generationConfig: { responseMimeType: "application/json" }
       });
+      const aiRes = await model.generateContent([
+        { text: fullPrompt },
+        {
+          inlineData: {
+            mimeType: blob.type || "image/jpeg",
+            data: base64Content
+          }
+        }
+      ]);
 
-      const responseText = result.text;
+      const aiResponse = await aiRes.response;
+      const responseText = aiResponse.text();
       if (!responseText) throw new Error("No se recibió respuesta de la IA");
       console.log("Gemini response received for Smart Enhance:", responseText);
-      const aiResponse = JSON.parse(responseText);
+      const aiData = JSON.parse(responseText);
       
       // Normalize AI response to match our internal ranges
       const enhancedSettings: LightingSettings = {
         ...photo.settings,
-        ...aiResponse
+        ...aiData
       };
       
       updatePhotoSettings(id, enhancedSettings);
@@ -1491,10 +1592,10 @@ function AppContent() {
       
       console.log(`Fetching image for AI analysis (${isRaw ? 'RAW Proxy' : 'Original'}):`, targetUrl);
       const imageUrl = fixImageUrl(targetUrl);
-      const response = await fetch(imageUrl);
-      if (!response.ok) throw new Error(`Error al descargar la imagen: ${response.statusText}`);
+      const imageRes = await fetch(imageUrl);
+      if (!imageRes.ok) throw new Error(`Error al descargar la imagen: ${imageRes.statusText}`);
       
-      const blob = await response.blob();
+      const blob = await imageRes.blob();
       console.log("Image blob obtained:", blob.type, blob.size);
       
       const reader = new FileReader();
@@ -1518,23 +1619,20 @@ function AppContent() {
       Responde ÚNICAMENTE con el JSON.`;
 
       console.log("Sending request to Gemini...");
-      if (!ai) {
+      if (!aiInstance) {
         throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
       }
-      const result = await ai.models.generateContent({
+      const model = aiInstance.getGenerativeModel({ 
         model: "gemini-1.5-flash",
-        contents: {
-          parts: [
-            { text: prompt },
-            { inlineData: { data: imageData, mimeType: blob.type || "image/jpeg" } }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json"
-        }
+        generationConfig: { responseMimeType: "application/json" }
       });
+      const aiResult = await model.generateContent([
+        { text: prompt },
+        { inlineData: { data: imageData, mimeType: blob.type || "image/jpeg" } }
+      ]);
 
-      const responseText = result.text;
+      const aiResponse = await aiResult.response;
+      const responseText = aiResponse.text();
       if (!responseText) throw new Error("No se recibió respuesta de la IA");
       console.log("Gemini response received:", responseText);
       const analysis = JSON.parse(responseText);
@@ -1565,13 +1663,15 @@ function AppContent() {
   };
 
   const navigatePhoto = (direction: 'prev' | 'next') => {
-    const currentIndex = photos.findIndex(p => p.id === selectedPhotoId);
+    // Issue 2.6 fix: Navigate over filtered list
+    const list = filteredPhotos.length > 0 ? filteredPhotos : photos;
+    const currentIndex = list.findIndex(p => p.id === selectedPhotoId);
     let nextIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
     
-    if (nextIndex >= photos.length) nextIndex = 0;
-    if (nextIndex < 0) nextIndex = photos.length - 1;
+    if (nextIndex >= list.length) nextIndex = 0;
+    if (nextIndex < 0) nextIndex = list.length - 1;
     
-    setSelectedPhotoId(photos[nextIndex].id);
+    setSelectedPhotoId(list[nextIndex].id);
   };
 
   const updatePhotoTitle = async (id: string, newTitle: string) => {
@@ -1637,7 +1737,8 @@ function AppContent() {
         }, settings.format, settings.quality);
       };
       img.onerror = reject;
-      img.src = selectedPhoto.url;
+      // Issue 2.7 fix: Use fixImageUrl
+      img.src = fixImageUrl(selectedPhoto.url);
     }), {
       loading: 'Preparando descarga...',
       success: 'Imagen descargada con éxito',
@@ -1706,6 +1807,17 @@ function AppContent() {
           />
         )}
       </AnimatePresence>
+
+      {!isSidebarOpen && (
+        <Button 
+          variant="ghost" 
+          size="icon" 
+          className="fixed top-4 left-4 z-[100] bg-zinc-950/80 backdrop-blur-md border border-zinc-900 rounded-xl shadow-xl text-zinc-400 hover:text-white"
+          onClick={() => setIsSidebarOpen(true)}
+        >
+          <Menu className="w-5 h-5" />
+        </Button>
+      )}
 
       {/* Sidebar Navigation */}
       <motion.aside 
@@ -2264,10 +2376,7 @@ function AppContent() {
                                 size="sm" 
                                 variant="ghost" 
                                 className="h-9 text-[10px] uppercase font-bold tracking-widest text-zinc-400 hover:text-white"
-                                onClick={() => {
-                                  // Logic to delete multiple if needed
-                                  toast.error("Borrado múltiple no implementado aún");
-                                }}
+                                onClick={bulkDeletePhotos}
                               >
                                 <Trash2 className="w-3.5 h-3.5 mr-2" />
                                 Borrar
@@ -2336,7 +2445,7 @@ function AppContent() {
                       </AnimatePresence>
 
                       {filteredPhotos.length > 0 ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-32">
                           {filteredPhotos.map((photo) => (
                             <motion.div
                               key={photo.id}
@@ -2535,11 +2644,13 @@ function AppContent() {
                             type="text" 
                             placeholder="Buscar clientes..." 
                             className="w-full bg-zinc-900 border border-zinc-800 rounded-lg py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-amber-500/50"
+                            value={clientSearchQuery}
+                            onChange={e => setClientSearchQuery(e.target.value)}
                           />
                         </div>
                         <ScrollArea className="h-[600px] pr-4">
                           <div className="space-y-2">
-                            {clients.length > 0 ? clients.map(client => (
+                            {filteredClients.length > 0 ? filteredClients.map(client => (
                               <Card 
                                 key={client.id} 
                                 className={`bg-zinc-900 border-zinc-800 p-4 cursor-pointer transition-all ${selectedClientId === client.id ? 'border-amber-500 bg-amber-500/5' : 'hover:border-zinc-700'}`}
@@ -2575,7 +2686,22 @@ function AppContent() {
                                       <p className="text-zinc-500 text-sm">{client?.email}</p>
                                     </div>
                                     <div className="flex items-center gap-3">
-                                      <Button variant="outline" className="border-zinc-800 h-10">Editar Perfil</Button>
+                                      <Button 
+                                        variant="outline" 
+                                        className="border-zinc-800 h-10"
+                                        onClick={() => {
+                                          if (selectedClient) {
+                                            setNewClientData({
+                                              name: selectedClient.name,
+                                              email: selectedClient.email || '',
+                                              notes: selectedClient.notes || ''
+                                            });
+                                            setIsCreateClientOpen(true);
+                                          }
+                                        }}
+                                      >
+                                        Editar Perfil
+                                      </Button>
                                     </div>
                                   </div>
 
@@ -2845,6 +2971,16 @@ function AppContent() {
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.min(5, z + 0.1))}><ZoomIn className="w-3.5 h-3.5" /></Button>
                 </div>
                 <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className={`h-8 border-none text-[10px] uppercase font-bold tracking-widest gap-2 ${showEditorControls ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-600 hover:text-white'}`}
+                  onClick={() => setShowEditorControls(!showEditorControls)}
+                >
+                  <Layout className="w-3.5 h-3.5" />
+                  Panel
+                </Button>
+                <div className="h-4 w-px bg-zinc-800 mx-1" />
+                <Button 
                   variant="outline" 
                   size="sm" 
                   className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2" 
@@ -2883,12 +3019,12 @@ function AppContent() {
                           referrerPolicy="no-referrer"
                         />
                       )}
-                      <div className="absolute border border-amber-500/50 bg-amber-500/5 pointer-events-none" 
+                      <div className="absolute border border-amber-500 bg-amber-500/10 pointer-events-none" 
                         style={{ 
-                          width: `${100/zoom}%`, 
-                          height: `${100/zoom}%`,
-                          left: `${50 - (pan.x/100)}%`,
-                          top: `${50 - (pan.y/100)}%`,
+                          width: `${Math.min(100, 100/zoom)}%`, 
+                          height: `${Math.min(100, 100/zoom)}%`,
+                          left: `${50 - (pan.x / (imageStageRef.current?.offsetWidth || 1) * 50)}%`,
+                          top: `${50 - (pan.y / (imageStageRef.current?.offsetHeight || 1) * 50)}%`,
                           transform: 'translate(-50%, -50%)'
                         }} 
                       />
@@ -3021,29 +3157,53 @@ function AppContent() {
               {/* Main Content Area */}
               <div className="flex-1 flex flex-col overflow-hidden relative bg-[#0a0a0a]">
                 {/* Image Stage */}
-                <div
-                  ref={imageStageRef}
-                  className={`flex-1 relative overflow-hidden flex items-center justify-center ${isDragging ? 'cursor-grabbing' : zoom > 1 ? 'cursor-grab' : 'cursor-default'}`}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseUp}
-                  onDoubleClick={resetZoom}
-                >
+                  <div
+                    ref={imageStageRef}
+                    className={`flex-1 relative overflow-hidden flex items-center justify-center ${isDragging ? 'cursor-grabbing' : zoom > 1 ? 'cursor-grab' : 'cursor-default'}`}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    onDoubleClick={resetZoom}
+                    onWheel={(e) => {
+                      e.preventDefault();
+                      const delta = e.deltaY;
+                      const factor = 0.002;
+                      const zoomChange = -delta * factor;
+                      
+                      setZoom(prev => {
+                        const newZoom = Math.min(10, Math.max(0.1, prev + zoomChange));
+                        return newZoom;
+                      });
+                      
+                      if (!e.ctrlKey && !e.metaKey && Math.abs(e.deltaX) > 0.5) {
+                        setPan(prev => ({
+                          x: prev.x - e.deltaX,
+                          y: prev.y - e.deltaY
+                        }));
+                      }
+                    }}
+                  >
                   {!selectedPhoto ? (
                     <div className="text-center p-8">
                       <ImageIcon className="w-12 h-12 text-zinc-800 mx-auto mb-4" />
                       <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
                     </div>
                   ) : (
-                      <div 
-                        className="relative flex items-center justify-center w-full h-full"
-                        style={{ 
-                          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                          transition: 'none'
-                        }}
-                      >
-                         {/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) && !selectedPhoto.thumbnailUrl ? (
+                      <AnimatePresence mode="wait">
+                        <motion.div 
+                          key={selectedPhoto.id}
+                          initial={{ opacity: 0, scale: 0.98 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 1.02 }}
+                          transition={{ duration: 0.2, ease: "easeOut" }}
+                          className="relative flex items-center justify-center w-full h-full"
+                          style={{ 
+                            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                            transition: 'none'
+                          }}
+                        >
+                           {/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) && !selectedPhoto.thumbnailUrl ? (
                            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-900/50 p-12 rounded-2xl border border-zinc-800 backdrop-blur-xl">
                              <ImageIcon className="w-20 h-20 mb-6 opacity-20" />
                              <h3 className="text-xl font-bold text-white mb-2">Archivo RAW Detectado</h3>
@@ -3067,14 +3227,25 @@ function AppContent() {
                          )}
 
 
-                        {/* Crop Overlay */}
-                        {isCropping && (
-                          <CropOverlay 
-                            settings={selectedPhoto.settings}
-                            onCropChange={(updates) => updatePhotoSettings(selectedPhoto.id, updates)}
-                            imageRect={imageRef.current?.getBoundingClientRect() || null}
-                          />
-                        )}
+        {/* Crop Overlay */}
+        {isCropping && (
+          <div 
+            className="absolute z-40 pointer-events-none"
+            style={{
+              width: imageRef.current?.style.width,
+              height: imageRef.current?.style.height,
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)'
+            }}
+          >
+            <CropOverlay 
+              settings={selectedPhoto.settings}
+              onCropChange={(updates) => updatePhotoSettings(selectedPhoto.id, updates)}
+              imageRect={imageRef.current?.getBoundingClientRect() || null}
+            />
+          </div>
+        )}
 
                         {/* Comparison Slider Handle */}
                         {isComparing && (
@@ -3100,7 +3271,8 @@ function AppContent() {
                             />
                           </>
                         )}
-                      </div>
+                        </motion.div>
+                      </AnimatePresence>
                     )}
                 </div>
 
@@ -3113,67 +3285,69 @@ function AppContent() {
               </div>
 
               {/* Right Sidebar: Controls */}
-              <div className="w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden">
-                {selectedPhoto && (
-                  <>
-                    {/* Fixed Histogram Section */}
-                    <div className="p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10">
-                      <div className="space-y-4">
-                        <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
-                          Histograma en Tiempo Real
-                        </h4>
-                        <Histogram 
-                          settings={previewSettings || selectedPhoto.settings} 
-                          imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                        />
+              {showEditorControls && (
+                <div className="w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden">
+                  {selectedPhoto && (
+                    <>
+                      {/* Fixed Histogram Section */}
+                      <div className="p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10">
+                        <div className="space-y-4">
+                          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
+                            Histograma en Tiempo Real
+                          </h4>
+                          <Histogram 
+                            settings={previewSettings || selectedPhoto.settings} 
+                            imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                          />
+                        </div>
                       </div>
-                    </div>
 
-                    {/* Scrollable Content Section */}
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
-                      <div className="space-y-10">
-                        {/* AI Information Section */}
-                        {selectedPhoto.description && (
-                          <div className="space-y-4">
-                            <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
-                              Análisis IA
-                              <Sparkles className="w-3 h-3 text-amber-500" />
-                            </h4>
-                            <div className="space-y-3">
-                              <p className="text-[11px] text-zinc-400 leading-relaxed italic">
-                                "{selectedPhoto.description}"
-                              </p>
-                              <div className="flex flex-wrap gap-1.5">
-                                {selectedPhoto.tags?.map((tag, idx) => (
-                                  <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
-                                    {tag}
-                                  </Badge>
-                                ))}
+                      {/* Scrollable Content Section */}
+                      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 pt-16">
+                        <div className="space-y-10">
+                          {/* AI Information Section */}
+                          {selectedPhoto.description && (
+                            <div className="space-y-4">
+                              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                                Análisis IA
+                                <Sparkles className="w-3 h-3 text-amber-500" />
+                              </h4>
+                              <div className="space-y-3">
+                                <p className="text-[11px] text-zinc-400 leading-relaxed italic">
+                                  "{selectedPhoto.description}"
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {selectedPhoto.tags?.map((tag, idx) => (
+                                    <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
+                                      {tag}
+                                    </Badge>
+                                  ))}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Main Controls */}
-                        <LightingControls 
-                          settings={selectedPhoto.settings} 
-                          onChange={(s) => {
-                            updatePhotoSettings(selectedPhoto.id, s);
-                            setPreviewSettings(s);
-                          }}
-                          onPreviewChange={setPreviewSettings}
-                          userPlan={userProfile?.plan || 'free'}
-                          onSmartEnhance={(p) => smartEnhance(selectedPhoto.id, p)}
-                          isAutoEnhancing={isAutoEnhancing}
-                          onCopySettings={() => copySettings(selectedPhoto.settings)}
-                          onPasteSettings={() => pasteSettings(selectedPhoto.id)}
-                          hasCopiedSettings={!!copiedSettings}
-                        />
+                          {/* Main Controls */}
+                          <LightingControls 
+                            settings={previewSettings || selectedPhoto.settings} 
+                            onChange={(s) => {
+                              updatePhotoSettings(selectedPhoto.id, s);
+                              setPreviewSettings(s);
+                            }}
+                            onPreviewChange={setPreviewSettings}
+                            userPlan={userProfile?.plan || 'free'}
+                            onSmartEnhance={(p) => smartEnhance(selectedPhoto.id, p)}
+                            isAutoEnhancing={isAutoEnhancing}
+                            onCopySettings={() => copySettings(selectedPhoto.settings)}
+                            onPasteSettings={() => pasteSettings(selectedPhoto.id)}
+                            hasCopiedSettings={!!copiedSettings}
+                          />
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}

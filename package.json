@@ -5,14 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "start": "node server.ts",
-    "build": "vite build",
+    "start": "node dist-server/server.js",
+    "build": "vite build && npm run build:server",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "npm run build && npm run build:server && electron-builder",
-    "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --outfile=dist-server/server.cjs --external:sharp --external:exiftool-vendored"
+    "electron:build": "npm run build && electron-builder",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=dist-server/server.js --external:sharp --external:exiftool-vendored --external:firebase-admin --external:express --external:multer --external:cors --external:backblaze-b2 --external:mercadopago --external:resend --external:axios --external:archiver --external:dotenv --external:@google/generative-ai --resolve-extensions=.ts,.js"
   },
   "main": "electron/main.cjs",
   "build": {
