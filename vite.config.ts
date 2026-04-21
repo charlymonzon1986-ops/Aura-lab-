@@ -7,7 +7,7 @@ export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const isDev = mode === 'development';
   return {
-    base: isDev ? '/' : './',
+    base: '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
