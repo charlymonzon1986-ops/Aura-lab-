@@ -137,8 +137,8 @@ export class WebGLRenderer {
     this.setUniform("u_contrast", (s.contrast ?? 100) / 100);
     this.setUniform("u_saturation", (s.saturation ?? 100) / 100);
     this.setUniform("u_vibrance", ((s.vibrance ?? 100) - 100) / 100);
-    this.setUniform("u_warmth", ((s.warmth ?? 100) - 100) / 200);
-    this.setUniform("u_tint", ((s.tint ?? 100) - 100) / 200);
+    this.setUniform("u_warmth", (s.warmth ?? 0) / 200);
+    this.setUniform("u_tint", (s.tint ?? 0) / 200);
     this.setUniform("u_highlights", ((s.highlights ?? 100) - 100) / 200);
     this.setUniform("u_shadows", ((s.shadows ?? 100) - 100) / 200);
     this.setUniform("u_whites", ((s.whites ?? 100) - 100) / 200);

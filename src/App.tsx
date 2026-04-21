@@ -2879,29 +2879,29 @@ function AppContent() {
           /* Editor View (Lightroom Style) */
           <div className="fixed inset-0 top-16 bg-zinc-950 flex flex-col overflow-hidden z-40">
             {/* Top Toolbar */}
-            <div className="h-14 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-xl flex items-center justify-between px-6 z-20">
-              <div className="flex items-center gap-6">
+            <div className="min-h-14 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-xl flex flex-col sm:flex-row sm:items-center justify-between px-4 sm:px-6 py-2 sm:py-0 gap-3 z-20">
+              <div className="flex items-center gap-3 sm:gap-6 overflow-hidden">
                 <Button 
                   variant="ghost" 
                   size="sm" 
-                  className="text-zinc-400 hover:text-white gap-2"
+                  className="text-zinc-400 hover:text-white gap-2 px-0 h-8 sm:h-auto"
                   onClick={() => {
                     setSelectedPhotoId(null);
                     setActiveTab('gallery');
                   }}
                 >
                   <ChevronLeft className="w-4 h-4" />
-                  Biblioteca
+                  <span className="hidden xs:inline">Biblioteca</span>
                 </Button>
                 <div className="h-4 w-[1px] bg-zinc-800" />
-                <div className="flex items-center gap-2 group">
-                  <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[10px] uppercase font-black">Revelar</Badge>
-                  <div className="relative flex items-center">
+                <div className="flex items-center gap-2 group min-w-0">
+                  <Badge className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-[9px] sm:text-[10px] uppercase font-black shrink-0">Revelar</Badge>
+                  <div className="relative flex items-center min-w-0">
                     <input 
                       type="text"
                       value={selectedPhoto?.title || ""}
                       onChange={(e) => selectedPhoto && updatePhotoTitle(selectedPhoto.id, e.target.value)}
-                      className="text-xs font-bold text-zinc-300 uppercase tracking-widest bg-transparent border-none focus:ring-0 focus:outline-none hover:text-white transition-colors w-64 pr-6"
+                      className="text-[10px] sm:text-xs font-bold text-zinc-300 uppercase tracking-widest bg-transparent border-none focus:ring-0 focus:outline-none hover:text-white transition-colors w-full sm:w-64 pr-6 truncate"
                       placeholder="Sin título"
                     />
                     <Edit2 className="w-3 h-3 text-zinc-600 absolute right-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
@@ -2909,31 +2909,31 @@ function AppContent() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 sm:pb-0">
                 <Button 
                   variant={isComparing ? "default" : "outline"} 
                   size="sm" 
-                  className={`h-8 ${isComparing ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400 hover:text-white'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  className={`h-8 flex-shrink-0 ${isComparing ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400 hover:text-white'} text-[10px] uppercase font-bold tracking-widest gap-2`}
                   onClick={() => setIsComparing(!isComparing)}
                 >
                   <Split className="w-3 h-3" />
-                  {isComparing ? 'Viendo' : 'Comparar'}
+                  <span className="hidden lg:inline">{isComparing ? 'Viendo' : 'Comparar'}</span>
                 </Button>
 
                 <Button 
                   variant={isCropping ? "default" : "outline"} 
                   size="sm" 
-                  className={`h-8 ${isCropping ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400 hover:text-white'} text-[10px] uppercase font-bold tracking-widest gap-2`}
+                  className={`h-8 flex-shrink-0 ${isCropping ? 'bg-amber-500 text-black hover:bg-amber-600' : 'border-zinc-800 text-zinc-400 hover:text-white'} text-[10px] uppercase font-bold tracking-widest gap-2`}
                   onClick={() => setIsCropping(!isCropping)}
                 >
                   <Crop className="w-3 h-3" />
-                  {isCropping ? 'Listo' : 'Recortar'}
+                  <span className="hidden lg:inline">{isCropping ? 'Listo' : 'Recortar'}</span>
                 </Button>
 
-                <div className="h-4 w-px bg-zinc-800 mx-1" />
+                <div className="h-4 w-px bg-zinc-800 shrink-0" />
 
                 {/* Flags & Colors */}
-                <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 px-1">
+                <div className="flex items-center gap-1 bg-zinc-900 rounded-lg p-0.5 px-1 shrink-0">
                   <Button 
                     variant="ghost" size="icon" className={`h-7 w-7 ${selectedPhoto?.flag === 'pick' ? 'text-green-500 bg-green-500/10' : 'text-zinc-500'}`}
                     onClick={() => selectedPhoto && setPhotoFlag(selectedPhoto.id, selectedPhoto.flag === 'pick' ? 'none' : 'pick')}
@@ -2961,26 +2961,26 @@ function AppContent() {
                   ))}
                 </div>
 
-                <div className="h-4 w-px bg-zinc-800 mx-1" />
+                <div className="h-4 w-px bg-zinc-800 shrink-0" />
 
                 {/* Copy/Paste */}
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 shrink-0">
                   <Button 
-                    variant="ghost" size="sm" className="h-8 text-[10px] text-zinc-500 uppercase font-black"
+                    variant="ghost" size="sm" className="h-8 text-[10px] text-zinc-500 uppercase font-black px-2"
                     onClick={() => selectedPhoto && copySettings(selectedPhoto.settings)}
                   >
                     Copiar
                   </Button>
                   <Button 
-                    variant="ghost" size="sm" className={`h-8 text-[10px] uppercase font-black ${copiedSettings ? 'text-amber-500' : 'text-zinc-700 disabled'}`}
+                    variant="ghost" size="sm" className={`h-8 text-[10px] uppercase font-black px-2 ${copiedSettings ? 'text-amber-500' : 'text-zinc-700 disabled'}`}
                     onClick={() => selectedPhoto && pasteSettings(selectedPhoto.id)}
                     disabled={!copiedSettings}
                   >
                     Pegar
                   </Button>
-                  {selectedPhotoIds.length > 0 && selectedPhoto && (
+                  {selectedPhotoIds.length > 1 && (
                     <Button 
-                      variant="outline" size="sm" className="h-8 border-amber-500/50 text-amber-500 text-[10px] uppercase font-black animate-pulse"
+                      variant="outline" size="sm" className="h-8 border-amber-500/50 text-amber-500 text-[10px] uppercase font-black animate-pulse px-2"
                       onClick={syncSettingsToSelected}
                     >
                       Sincro ({selectedPhotoIds.length})
@@ -2988,40 +2988,45 @@ function AppContent() {
                   )}
                 </div>
 
-                <div className="h-4 w-px bg-zinc-800 mx-1" />
+                <div className="h-4 w-px bg-zinc-800 shrink-0" />
 
-                <div className="flex items-center bg-zinc-900 rounded-lg p-1 mr-4">
+                <div className="flex items-center bg-zinc-900 rounded-lg p-1 shrink-0">
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}><ZoomOut className="w-3.5 h-3.5" /></Button>
-                  <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
+                  <span className="text-[10px] font-mono text-zinc-400 w-10 text-center">{Math.round(zoom * 100)}%</span>
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-white" onClick={() => setZoom(z => Math.min(5, z + 0.1))}><ZoomIn className="w-3.5 h-3.5" /></Button>
                 </div>
+
                 <Button 
                   variant="ghost" 
                   size="sm" 
-                  className={`h-8 border-none text-[10px] uppercase font-bold tracking-widest gap-2 ${showEditorControls ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-600 hover:text-white'}`}
+                  className={`h-8 flex-shrink-0 text-[10px] uppercase font-bold tracking-widest gap-2 ${showEditorControls ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-600 hover:text-white'}`}
                   onClick={() => setShowEditorControls(!showEditorControls)}
                 >
                   <Layout className="w-3.5 h-3.5" />
-                  Panel
+                  <span className="hidden sm:inline">Panel</span>
                 </Button>
-                <div className="h-4 w-px bg-zinc-800 mx-1" />
+
+                <div className="h-4 w-px bg-zinc-800 shrink-0" />
+
                 <Button 
                   variant="outline" 
                   size="sm" 
-                  className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2" 
+                  className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2 flex-shrink-0" 
                   onClick={() => selectedPhoto && analyzePhotoWithIA(selectedPhoto.id)}
                   disabled={isAnalyzing}
                 >
                   <Zap className="w-3 h-3 text-amber-500" />
-                  {isAnalyzing ? 'Analizando...' : 'Análisis IA'}
+                  {isAnalyzing ? '...' : <span className="hidden sm:inline">IA</span>}
                 </Button>
-                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
+
+                <Button variant="outline" size="sm" className="h-8 border-zinc-800 text-zinc-400 hover:text-white text-[10px] uppercase font-bold tracking-widest gap-2 flex-shrink-0" onClick={() => selectedPhoto && resetSettings(selectedPhoto.id)}>
                   <RotateCcw className="w-3 h-3" />
-                  Reset
+                  <span className="hidden sm:inline">Rst</span>
                 </Button>
-                <Button className="h-8 bg-white text-black hover:bg-zinc-200 text-[10px] uppercase font-bold tracking-widest gap-2" onClick={() => selectedPhoto && setIsExportModalOpen(true)}>
+
+                <Button className="h-8 bg-white text-black hover:bg-zinc-200 text-[10px] uppercase font-bold tracking-widest gap-2 flex-shrink-0" onClick={() => selectedPhoto && setIsExportModalOpen(true)}>
                   <Download className="w-3 h-3" />
-                  Exportar
+                  <span className="hidden xs:inline">Exp</span>
                 </Button>
               </div>
             </div>
@@ -3180,11 +3185,11 @@ function AppContent() {
               </div>
 
               {/* Main Content Area */}
-              <div className="flex-1 flex flex-col overflow-hidden relative bg-[#0a0a0a]">
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative bg-[#0a0a0a]">
                 {/* Image Stage */}
                   <div
                     ref={imageStageRef}
-                    className={`flex-1 relative overflow-hidden flex items-center justify-center ${isDragging ? 'cursor-grabbing' : zoom > 1 ? 'cursor-grab' : 'cursor-default'}`}
+                    className={`flex-1 min-h-0 relative overflow-hidden flex items-center justify-center ${isDragging ? 'cursor-grabbing' : zoom > 1 ? 'cursor-grab' : 'cursor-default'}`}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
@@ -3310,69 +3315,93 @@ function AppContent() {
               </div>
 
               {/* Right Sidebar: Controls */}
-              {showEditorControls && (
-                <div className="w-80 border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden">
-                  {selectedPhoto && (
-                    <>
-                      {/* Fixed Histogram Section */}
-                      <div className="p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10">
-                        <div className="space-y-4">
-                          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
-                            Histograma en Tiempo Real
-                          </h4>
-                          <Histogram 
-                            settings={previewSettings || selectedPhoto.settings} 
-                            imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
-                          />
-                        </div>
-                      </div>
-
-                      {/* Scrollable Content Section */}
-                      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 pt-16">
-                        <div className="space-y-10">
-                          {/* AI Information Section */}
-                          {selectedPhoto.description && (
+              <AnimatePresence>
+                {showEditorControls && (
+                  <>
+                    {/* Overlay for mobile */}
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setShowEditorControls(false)}
+                      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
+                    />
+                    <motion.div 
+                      initial={{ x: "100%" }}
+                      animate={{ x: 0 }}
+                      exit={{ x: "100%" }}
+                      transition={{ type: "spring", damping: 30, stiffness: 300 }}
+                      className="fixed inset-y-0 right-0 w-[85%] lg:relative lg:w-80 lg:inset-auto border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden z-50 lg:z-auto shadow-2xl lg:shadow-none"
+                    >
+                      {selectedPhoto && (
+                        <>
+                          <div className="lg:hidden flex items-center justify-between p-4 border-b border-zinc-900 bg-zinc-900/30">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Ajustes</span>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-500" onClick={() => setShowEditorControls(false)}>
+                              <ChevronRight className="w-4 h-4" />
+                            </Button>
+                          </div>
+                          {/* Fixed Histogram Section */}
+                          <div className="p-4 sm:p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10 shrink-0">
                             <div className="space-y-4">
-                              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
-                                Análisis IA
-                                <Sparkles className="w-3 h-3 text-amber-500" />
+                              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
+                                Histograma
                               </h4>
-                              <div className="space-y-3">
-                                <p className="text-[11px] text-zinc-400 leading-relaxed italic">
-                                  "{selectedPhoto.description}"
-                                </p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {selectedPhoto.tags?.map((tag, idx) => (
-                                    <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
-                                      {tag}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </div>
+                              <Histogram 
+                                settings={previewSettings || selectedPhoto.settings} 
+                                imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                              />
                             </div>
-                          )}
+                          </div>
 
-                          {/* Main Controls */}
-                          <LightingControls 
-                            settings={previewSettings || selectedPhoto.settings} 
-                            onChange={(s) => {
-                              updatePhotoSettings(selectedPhoto.id, s);
-                              setPreviewSettings(s);
-                            }}
-                            onPreviewChange={setPreviewSettings}
-                            userPlan={userProfile?.plan || 'free'}
-                            onSmartEnhance={(p) => smartEnhance(selectedPhoto.id, p)}
-                            isAutoEnhancing={isAutoEnhancing}
-                            onCopySettings={() => copySettings(selectedPhoto.settings)}
-                            onPasteSettings={() => pasteSettings(selectedPhoto.id)}
-                            hasCopiedSettings={!!copiedSettings}
-                          />
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+                          {/* Scrollable Content Section */}
+                          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6">
+                            <div className="space-y-10">
+                              {/* AI Information Section */}
+                              {selectedPhoto.description && (
+                                <div className="space-y-4">
+                                  <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                                    Análisis IA
+                                    <Sparkles className="w-3 h-3 text-amber-500" />
+                                  </h4>
+                                  <div className="space-y-3">
+                                    <p className="text-[11px] text-zinc-400 leading-relaxed italic">
+                                      "{selectedPhoto.description}"
+                                    </p>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {selectedPhoto.tags?.map((tag, idx) => (
+                                        <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
+                                          {tag}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Main Controls */}
+                              <LightingControls 
+                                settings={previewSettings || selectedPhoto.settings} 
+                                onChange={(s) => {
+                                  updatePhotoSettings(selectedPhoto.id, s);
+                                  setPreviewSettings(s);
+                                }}
+                                onPreviewChange={setPreviewSettings}
+                                userPlan={userProfile?.plan || 'free'}
+                                onSmartEnhance={(p) => smartEnhance(selectedPhoto.id, p)}
+                                isAutoEnhancing={isAutoEnhancing}
+                                onCopySettings={() => copySettings(selectedPhoto.settings)}
+                                onPasteSettings={() => pasteSettings(selectedPhoto.id)}
+                                hasCopiedSettings={!!copiedSettings}
+                              />
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         )}

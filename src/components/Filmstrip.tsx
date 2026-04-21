@@ -23,14 +23,14 @@ export function Filmstrip({ photos, selectedPhotoId, onSelect }: FilmstripProps)
   }, [selectedPhotoId]);
 
   return (
-    <div className="h-24 border-t border-zinc-900 bg-zinc-950/80 backdrop-blur-xl flex items-center px-4 gap-3 overflow-x-auto custom-scrollbar" ref={scrollRef}>
+    <div className="h-16 sm:h-24 border-t border-zinc-900 bg-zinc-950/80 backdrop-blur-xl flex items-center px-4 gap-3 overflow-x-auto custom-scrollbar no-scrollbar" ref={scrollRef}>
       {photos.map((photo) => (
         <motion.div
           key={photo.id}
           data-id={photo.id}
           whileHover={{ y: -4 }}
           onClick={() => onSelect(photo.id)}
-          className={`relative shrink-0 w-28 h-16 rounded-md overflow-hidden cursor-pointer border-2 transition-all duration-300 ${
+          className={`relative shrink-0 w-20 h-12 sm:w-28 sm:h-16 rounded-md overflow-hidden cursor-pointer border-2 transition-all duration-300 ${
             selectedPhotoId === photo.id ? 'border-amber-500 ring-2 ring-amber-500/20' : 'border-zinc-800 opacity-60 hover:opacity-100'
           }`}
         >

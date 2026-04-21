@@ -10,6 +10,13 @@ import cors from "cors";
 import multer from "multer";
 import sharp from "sharp";
 import axios from "axios";
+
+// Optimize sharp for Cloud Run (reduce memory usage)
+sharp.cache(false);
+if (process.env.K_SERVICE) {
+  sharp.concurrency(1);
+}
+
 import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
 import { Resend } from 'resend';
@@ -17,6 +24,7 @@ import B2 from 'backblaze-b2';
 import archiver from 'archiver';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import admin from 'firebase-admin';
+import os from 'os';
 
 // 1. Core configuration
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -166,7 +174,7 @@ async function startServer() {
     const isRaw = ['.arw', '.cr2', '.nef', '.dng', '.orf', '.raf', '.gpr'].includes(ext);
     try {
       if (isRaw) {
-        const tempDir = path.join(APP_DIR, 'temp');
+        const tempDir = path.join(os.tmpdir(), 'aura-lab-uploads');
         if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
         const tempPath = path.join(tempDir, `raw-${Date.now()}${ext}`);
         const thumbTempPath = path.join(tempDir, `thumb-${Date.now()}.jpg`);
@@ -214,8 +222,26 @@ async function startServer() {
     } catch { res.status(404).send("Not found"); }
   });
 
-  const mp = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || 'TEST' });
-  const resend = new Resend(process.env.RESEND_API_KEY);
+  let mpClient: MercadoPagoConfig | null = null;
+  function getMP() {
+    if (!mpClient) {
+      mpClient = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || 'TEST' });
+    }
+    return mpClient;
+  }
+
+  let resendClient: Resend | null = null;
+  function getResend() {
+    if (!resendClient) {
+      const key = process.env.RESEND_API_KEY;
+      if (!key) {
+        console.warn("⚠️ RESEND_API_KEY is not defined. Email features will fail.");
+        return null;
+      }
+      resendClient = new Resend(key);
+    }
+    return resendClient;
+  }
 
   app.get("/api/admin/config-check", (req, res) => {
     res.json({ gemini: !!process.env.GEMINI_API_KEY, mp: !!process.env.MERCADOPAGO_ACCESS_TOKEN, resend: !!process.env.RESEND_API_KEY, b2: !!process.env.B2_APPLICATION_KEY, prod: isProd });
@@ -229,7 +255,7 @@ async function startServer() {
   app.post("/api/create-preference", async (req, res) => {
     try {
       const { planName, price, userId } = req.body;
-      const pref = new Preference(mp);
+      const pref = new Preference(getMP());
       const result = await pref.create({
         body: {
           items: [{ id: planName, title: `Aura Plan ${planName}`, quantity: 1, unit_price: Number(price), currency_id: 'ARS' }],
@@ -310,9 +336,17 @@ async function startServer() {
         }
 
         // 4. Warmth / Tint (Approximated with tinting)
-        if (Math.abs(s.warmth - 100) > 5) {
-          const w = (s.warmth - 100) / 100;
-          pipe = pipe.tint({ r: 255, g: 255 - (w * 50), b: 255 - (w * 100) });
+        if (Math.abs(s.warmth || 0) > 2) {
+          const w = (s.warmth || 0) / 100;
+          // Shifting towards Yellow/Warm (reduce Blue) or Blue/Cool (reduce Red/Green)
+          if (w > 0) pipe = pipe.tint({ r: 255, g: 255 - (w * 20), b: 255 - (w * 120) });
+          else pipe = pipe.tint({ r: 255 + (w * 100), g: 255 + (w * 20), b: 255 });
+        }
+        if (Math.abs(s.tint || 0) > 2) {
+          const t = (s.tint || 0) / 100;
+          // Shifting towards Magenta (reduce Green) or Green (reduce Red/Blue)
+          if (t > 0) pipe = pipe.tint({ r: 255, g: 255 - (t * 120), b: 255 });
+          else pipe = pipe.tint({ r: 255 + (t * 60), g: 255, b: 255 + (t * 60) });
         }
 
         // 5. Sharpening / Noise

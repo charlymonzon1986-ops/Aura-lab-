@@ -120,10 +120,15 @@ export const FRAGMENT_SHADER = `
     color += u_blacks * (1.0 - step(0.2, luma));
 
     // 5. Color Balance (Warmth/Tint)
-    color.r += u_warmth * 0.15;
+    // Warmth: Shifting R-up, B-down (classic yellow/blue)
+    color.r += u_warmth * 0.12;
+    color.g += u_warmth * 0.03; // Slight G boost to keep luminance balanced
     color.b -= u_warmth * 0.15;
-    color.g -= u_tint * 0.15;
-    color.rb += u_tint * 0.07;
+    
+    // Tint: Shifting G-down, R/B-up (standard magenta/green)
+    color.g -= u_tint * 0.18;
+    color.r += u_tint * 0.08;
+    color.b += u_tint * 0.08;
 
     // 6. Clarity & Texture (Simplified local contrast)
     if (u_clarity != 0.0 || u_texture != 0.0) {

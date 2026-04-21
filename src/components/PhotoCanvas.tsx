@@ -144,13 +144,14 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
 
   // Render loop
   React.useEffect(() => {
-    const render = async () => {
-      if (!img || !canvasRef.current || !containerRef.current) return;
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const updateSize = async () => {
+      if (!img) return;
       
-      const canvas = canvasRef.current;
-      const container = containerRef.current;
       const { width: containerWidth, height: containerHeight } = container.getBoundingClientRect();
-      
       if (containerWidth === 0 || containerHeight === 0) return;
 
       const imgRatio = img.width / img.height;
@@ -179,15 +180,21 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
       if (onImageReady) onImageReady(canvas);
     };
 
-    render();
+    const resizeObserver = new ResizeObserver(() => {
+      updateSize();
+    });
+
+    resizeObserver.observe(container);
+    updateSize(); // Initial call
+
+    return () => resizeObserver.disconnect();
   }, [img, settings, isComparing, compareValue]);
 
   return (
     <div ref={containerRef} className={`relative w-full h-full flex items-center justify-center overflow-hidden ${className}`}>
       <canvas 
         ref={canvasRef} 
-        className="max-w-full max-h-full object-contain shadow-2xl rounded-sm"
-        style={{ width: 'auto', height: 'auto' }}
+        className="shadow-2xl rounded-sm transition-opacity duration-300"
       />
     </div>
   );
