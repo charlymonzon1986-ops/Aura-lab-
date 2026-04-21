@@ -124,7 +124,8 @@ const fixImageUrlLocal = (url: string) => {
 // Safe initialization of Gemini AI
 let aiInstance: GoogleGenerativeAI | null = null;
 try {
-  const key = process.env.GEMINI_API_KEY;
+  // Using import.meta.env for Vite compatibility
+  const key = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY;
   if (key && key !== "undefined" && key.trim() !== "") {
     aiInstance = new GoogleGenerativeAI(key);
   }
@@ -132,17 +133,24 @@ try {
   console.error("Critical: Failed to pre-initialize Gemini AI:", e);
 }
 
-// Function to dynamically refresh AI instance (useful for standalone/EXE where keys come from .env later)
-export const initializeAI = (key: string) => {
-  if (key && key !== "undefined" && key.trim() !== "") {
-    aiInstance = new GoogleGenerativeAI(key);
-    return aiInstance;
+// Helper to safely parse AI JSON that might be wrapped in markdown
+const parseAIJSON = (text: string) => {
+  try {
+    // Try clean JSON first
+    return JSON.parse(text);
+  } catch (e) {
+    // Try to extract from markdown if present
+    const match = text.match(/```json\n([\s\S]*?)\n```/) || text.match(/```([\s\S]*?)```/);
+    if (match && match[1]) {
+      try {
+        return JSON.parse(match[1]);
+      } catch (e2) {
+        throw new Error("No se pudo procesar el formato de respuesta de la IA");
+      }
+    }
+    throw e;
   }
-  return null;
 };
-
-// Constant reference was removed here (Issue 2.1 fix)
-// We will use aiInstance directly in functions to ensure it has the latest value
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -173,7 +181,7 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   public render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6 text-center">
+        <div className="min-h-[100dvh] bg-zinc-950 flex items-center justify-center p-6 text-center">
           <div className="max-w-md space-y-4">
             <h1 className="text-2xl font-bold text-white uppercase tracking-widest">Algo salió mal</h1>
             <p className="text-zinc-500 text-sm leading-relaxed">
@@ -326,25 +334,6 @@ function AppContent() {
   const imageRef = React.useRef<HTMLCanvasElement>(null);
   const imageStageRef = React.useRef<HTMLDivElement>(null);
   
-  // Sync AI configuration for standalone/EXE
-  React.useEffect(() => {
-    const syncAI = async () => {
-      // If AI is not initialized yet (normal in bundled apps)
-      if (!aiInstance) {
-        try {
-          const response = await axios.get('/api/config/gemini');
-          if (response.data.key) {
-            console.log("🤖 Dynamic AI Initialization Successful");
-            initializeAI(response.data.key);
-          }
-        } catch (e) {
-          console.warn("Stand-alone AI sync not available or key missing.");
-        }
-      }
-    };
-    syncAI();
-  }, []);
-
   // Check for updates
   React.useEffect(() => {
     const checkUpdate = async () => {
@@ -1406,9 +1395,6 @@ function AppContent() {
       const base64Content = await base64Promise;
 
       console.log("Sending request to Gemini for Smart Enhance...");
-      if (!aiInstance) {
-        throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
-      }
 
       const baseInstruction = `Analiza esta fotografía y devuelve los ajustes de revelado ideales.
       REGLAS ESTRICTAS:
@@ -1438,25 +1424,20 @@ function AppContent() {
       - whites (85-100, 100 es neutro)
       - blacks (95-105, 100 es neutro)`;
 
-      const model = aiInstance.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        generationConfig: { responseMimeType: "application/json" }
+      // Call Server Proxy instead of Direct Client SDK for better reliability and security
+      const response = await axios.post("/api/ai/enhance", {
+        prompt: fullPrompt,
+        imageData: base64Content.split(',')[1], // Just the data part
+        mimeType: blob.type || "image/jpeg"
       });
-      const aiRes = await model.generateContent([
-        { text: fullPrompt },
-        {
-          inlineData: {
-            mimeType: blob.type || "image/jpeg",
-            data: base64Content
-          }
-        }
-      ]);
 
-      const aiResponse = await aiRes.response;
-      const responseText = aiResponse.text();
-      if (!responseText) throw new Error("No se recibió respuesta de la IA");
+      if (!response.data || !response.data.text) {
+        throw new Error("No se recibió respuesta válida de la IA");
+      }
+
+      const responseText = response.data.text;
       console.log("Gemini response received for Smart Enhance:", responseText);
-      const aiData = JSON.parse(responseText);
+      const aiData = parseAIJSON(responseText);
       
       // Normalize AI response to match our internal ranges
       const enhancedSettings: LightingSettings = {
@@ -1625,23 +1606,20 @@ function AppContent() {
       Responde ÚNICAMENTE con el JSON.`;
 
       console.log("Sending request to Gemini...");
-      if (!aiInstance) {
-        throw new Error("La función de IA no está configurada (falta GEMINI_API_KEY)");
-      }
-      const model = aiInstance.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        generationConfig: { responseMimeType: "application/json" }
+      // Call Server Proxy for security and reliability
+      const response = await axios.post("/api/ai/enhance", {
+        prompt: prompt,
+        imageData: imageData,
+        mimeType: blob.type || "image/jpeg"
       });
-      const aiResult = await model.generateContent([
-        { text: prompt },
-        { inlineData: { data: imageData, mimeType: blob.type || "image/jpeg" } }
-      ]);
 
-      const aiResponse = await aiResult.response;
-      const responseText = aiResponse.text();
-      if (!responseText) throw new Error("No se recibió respuesta de la IA");
+      if (!response.data || !response.data.text) {
+        throw new Error("No se recibió respuesta válida de la IA");
+      }
+
+      const responseText = response.data.text;
       console.log("Gemini response received:", responseText);
-      const analysis = JSON.parse(responseText);
+      const analysis = parseAIJSON(responseText);
 
       setPhotos(prev => prev.map(p => p.id === id ? { 
         ...p, 
@@ -1753,7 +1731,7 @@ function AppContent() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30 flex overflow-hidden relative">
+    <div className="min-h-[100dvh] bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30 flex overflow-hidden relative">
       {/* Sidebar Backdrop (Mobile) */}
       {/* Master SVG Filter for Real-time Image Processing */}
       <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}>
@@ -1785,12 +1763,13 @@ function AppContent() {
           {/* 5. Warmth & Tint */}
           <feColorMatrix id="f-color-balance" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0" />
 
-          {/* 6. Sharpening (Optional) */}
+        </filter>
+
+        <filter id="f-sharpen-filter">
           <feConvolveMatrix 
-            id="f-sharpen"
             order="3" 
             preserveAlpha="true" 
-            kernelMatrix="0 0 0 0 1 0 0 0 0" 
+            kernelMatrix="0 -1 0 -1 5 -1 0 -1 0" 
             divisor="1"
           />
         </filter>
@@ -1834,7 +1813,7 @@ function AppContent() {
           x: isSidebarOpen ? 0 : -20
         }}
         transition={{ type: "spring", damping: 25, stiffness: 200 }}
-        className="h-screen bg-zinc-950 border-r border-zinc-900 flex flex-col z-50 fixed lg:relative shrink-0 overflow-hidden shadow-2xl lg:shadow-none"
+        className="h-[100dvh] bg-zinc-950 border-r border-zinc-900 flex flex-col z-50 fixed lg:relative shrink-0 overflow-hidden shadow-2xl lg:shadow-none"
       >
         {/* Sidebar Header */}
         <div className="h-16 flex items-center px-4 border-b border-zinc-900 justify-between shrink-0">
@@ -1984,7 +1963,7 @@ function AppContent() {
       </motion.aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
+      <div className="flex-1 flex flex-col h-[100dvh] overflow-hidden relative">
         {showUpdateAvailable && (
           <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-1.5 flex items-center justify-between shrink-0 z-50">
             <div className="flex items-center gap-2">
@@ -3864,13 +3843,13 @@ function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
   }, [slug]);
 
   if (loading) return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-950">
+    <div className="min-h-[100dvh] flex items-center justify-center bg-zinc-950">
       <Activity className="w-8 h-8 text-amber-500 animate-spin" />
     </div>
   );
 
   if (!gallery) return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-950 text-white p-6 md:p-12 text-center">
+    <div className="min-h-[100dvh] flex flex-col items-center justify-center bg-zinc-950 text-white p-6 md:p-12 text-center">
       <XCircle className="w-16 h-16 text-zinc-800 mb-6" />
       <h1 className="text-3xl font-black uppercase tracking-tighter italic mb-4">Mala <span className="text-amber-500">Noticia</span></h1>
       <p className="text-zinc-500 max-w-sm mb-8">Esta galería no existe o ha sido eliminada por el fotógrafo.</p>
@@ -3879,7 +3858,7 @@ function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
   );
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
+    <div className="min-h-[100dvh] bg-zinc-950 text-white">
       <header className="fixed top-0 left-0 right-0 z-50 bg-zinc-950/80 backdrop-blur-xl border-b border-zinc-900 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/20">

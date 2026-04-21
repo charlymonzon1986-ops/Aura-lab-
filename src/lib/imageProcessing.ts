@@ -89,7 +89,7 @@ export function getFilterString(settings: LightingSettings): string {
     hue-rotate(${warmthHue + tintHue}deg)
     blur(${blurVal + nrBlur}px)
     ${lutFilter}
-    ${(sharpening > 0 || focus > 0) ? 'url(#f-sharpen)' : ''}
+    ${(sharpening > 0 || focus > 0) ? 'url(#f-sharpen-filter)' : ''}
   `.replace(/\s+/g, ' ').trim();
 }
 

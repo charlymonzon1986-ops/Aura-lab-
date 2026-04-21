@@ -4,3 +4,7 @@ coverage/
 *.log
 .env*
 !.env.example
+service-account.json
+dist/
+uploads/
+temp/

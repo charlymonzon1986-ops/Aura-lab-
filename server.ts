@@ -72,13 +72,23 @@ async function startServer() {
   let fsDb: any;
   try {
     if (!admin.apps.length) {
-      const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
-      if (saPath && fs.existsSync(saPath)) {
+      const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || path.join(process.cwd(), 'service-account.json');
+      const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+      
+      if (saJson) {
+        console.log("🔐 Initializing Firebase with JSON string from environment...");
+        admin.initializeApp({
+          credential: admin.credential.cert(JSON.parse(saJson)),
+          projectId: fbConfig.projectId
+        });
+      } else if (fs.existsSync(saPath)) {
+        console.log(`🔐 Initializing Firebase with file: ${saPath}`);
         admin.initializeApp({
           credential: admin.credential.cert(JSON.parse(fs.readFileSync(saPath, 'utf-8'))),
           projectId: fbConfig.projectId
         });
       } else {
+        console.log("🛡️ Initializing Firebase with default credentials...");
         admin.initializeApp({ projectId: fbConfig.projectId });
       }
     }
@@ -196,7 +206,10 @@ async function startServer() {
             return res;
           }
         } catch (e) {
+          console.error("RAW Extraction error:", e);
+        } finally {
           if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+          if (fs.existsSync(thumbTempPath)) fs.unlinkSync(thumbTempPath);
         }
       }
       return await sharp(buffer).resize(2000, 2000, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
@@ -405,6 +418,36 @@ async function startServer() {
       if (thumbnailUrl && thumbnailUrl !== url) await deleteFromB2(thumbnailUrl);
       res.json({ success: true });
     } catch { res.status(500).send("Error"); }
+  });
+
+  app.post("/api/ai/enhance", async (req, res) => {
+    try {
+      const { prompt, imageData, mimeType } = req.body;
+      const key = process.env.GEMINI_API_KEY;
+      if (!key) return res.status(500).json({ error: "Gemini API key not configured on server" });
+
+      const genAI = new GoogleGenerativeAI(key);
+      const model = genAI.getGenerativeModel({ 
+        model: "gemini-1.5-flash",
+        generationConfig: { responseMimeType: "application/json" }
+      });
+
+      const result = await model.generateContent([
+        { text: prompt },
+        {
+          inlineData: {
+            mimeType: mimeType || "image/jpeg",
+            data: imageData // Expecting base64 string without prefix
+          }
+        }
+      ]);
+
+      const response = await result.response;
+      res.json({ text: response.text() });
+    } catch (err: any) {
+      console.error("Gemini Server Error:", err);
+      res.status(500).json({ error: err.message || "AI Error" });
+    }
   });
 
   app.post("/api/upload", upload.single("file"), async (req, res) => {

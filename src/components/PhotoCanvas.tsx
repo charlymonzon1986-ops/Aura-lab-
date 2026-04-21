@@ -73,15 +73,23 @@ export async function renderImageToCanvas(
 
     ctx.filter = getFilterString(settings);
     ctx.save();
+    
     const cropX = (settings.cropLeft / 100) * img.width;
     const cropY = (settings.cropTop / 100) * img.height;
     const cropW = img.width * (1 - (settings.cropLeft + settings.cropRight) / 100);
     const cropH = img.height * (1 - (settings.cropTop + settings.cropBottom) / 100);
+    
     ctx.translate(drawWidth / 2, drawHeight / 2);
     ctx.rotate((settings.rotation * Math.PI) / 180);
     ctx.scale(settings.flipX ? -1 : 1, settings.flipY ? -1 : 1);
-    ctx.translate(-drawWidth / 2, -drawHeight / 2);
-    ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, drawWidth, drawHeight);
+    
+    // In rotated 2D context, we still need to draw with correct aspect ratio
+    const rotVal = Math.abs(settings.rotation % 360);
+    const isVertical = rotVal === 90 || rotVal === 270;
+    const destW = isVertical ? drawHeight : drawWidth;
+    const destH = isVertical ? drawWidth : drawHeight;
+    
+    ctx.drawImage(img, cropX, cropY, cropW, cropH, -destW / 2, -destH / 2, destW, destH);
     
     // Add Color Tints in 2D fallback
     if (settings.shadowTint && settings.shadowTint !== "transparent") {
@@ -154,7 +162,13 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
       const { width: containerWidth, height: containerHeight } = container.getBoundingClientRect();
       if (containerWidth === 0 || containerHeight === 0) return;
 
-      const imgRatio = img.width / img.height;
+      const rot = Math.abs(settings.rotation % 360);
+      const isVertical = rot === 90 || rot === 270;
+      
+      const imgWidth = isVertical ? img.height : img.width;
+      const imgHeight = isVertical ? img.width : img.height;
+      
+      const imgRatio = imgWidth / imgHeight;
       const containerRatio = containerWidth / containerHeight;
       
       let drawWidth, drawHeight;
