@@ -350,12 +350,12 @@ function AppContent() {
     const checkUpdate = async () => {
       try {
         const response = await axios.get('/api/version');
-        if (response.data.latest !== "1.0.1") {
+        if (response.data.latest !== "1.3.0") {
           setLatestVersion(response.data.latest);
           setShowUpdateAvailable(true);
         }
       } catch (e) {
-        console.log("Update check failed (normal if web-only)");
+        console.log("Update check failed (local environment)");
       }
     };
     checkUpdate();
@@ -392,8 +392,8 @@ function AppContent() {
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
           
-          const adminEmailsStr = (import.meta as any).env?.VITE_ADMIN_EMAILS || "juanomonzon@gmail.com,charlymonzon.1986@gmail.com,ruth1094@gmail.com";
-          const adminEmails = adminEmailsStr.split(",");
+          const adminEmailsStr = (import.meta as any).env?.VITE_ADMIN_EMAILS;
+          const adminEmails = adminEmailsStr ? adminEmailsStr.split(",") : [];
           const isAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
           
           const userDoc = await getDoc(userDocRef);
@@ -693,15 +693,9 @@ function AppContent() {
     try {
       const docRef = await addDoc(collection(db, "photos"), photoData);
       
-      // Update user storage used (Issue 2.3 fix)
-      if (size > 0) {
-        const userRef = doc(db, "users", user.uid);
-        await updateDoc(userRef, {
-          storageUsed: increment(size),
-          updatedAt: serverTimestamp()
-        });
-      }
-
+      // Issue 5.1 fix: Increment handled by server Admin SDK in /api/upload
+      // To avoid double increment, we removed the client-side call.
+      
       console.log("Foto guardada en Firestore con ID:", docRef.id);
 
       toast.success("Foto guardada en tu galería privada");
@@ -736,19 +730,31 @@ function AppContent() {
     }
 
     try {
-      await addDoc(collection(db, "clients"), {
-        userId: user.uid,
-        name: newClientData.name,
-        email: newClientData.email || "",
-        notes: newClientData.notes || "",
-        createdAt: serverTimestamp()
-      });
+      if (selectedClientId && clients.find(c => c.id === selectedClientId)) {
+        // Update existing
+        await updateDoc(doc(db, "clients", selectedClientId), {
+          name: newClientData.name,
+          email: newClientData.email || "",
+          notes: newClientData.notes || "",
+          updatedAt: serverTimestamp()
+        });
+        toast.success("Cliente actualizado con éxito");
+      } else {
+        // Create new
+        await addDoc(collection(db, "clients"), {
+          userId: user.uid,
+          name: newClientData.name,
+          email: newClientData.email || "",
+          notes: newClientData.notes || "",
+          createdAt: serverTimestamp()
+        });
+        toast.success("Cliente creado con éxito");
+      }
       setIsCreateClientOpen(false);
       setNewClientData({ name: '', email: '', notes: '' });
-      toast.success("Cliente creado con éxito");
     } catch (e) {
       console.error(e);
-      toast.error("Error al crear el cliente");
+      toast.error("Error al procesar cliente");
     }
   };
 
@@ -1347,8 +1353,8 @@ function AppContent() {
       }
 
       // Defer clean up
-      if (typeof (db as any).close === 'function') {
-        try { (db as any).close(); } catch (e) {}
+      if (lrcatDb && typeof lrcatDb.close === 'function') {
+        try { lrcatDb.close(); } catch (e) {}
       }
     } catch (err) {
       console.error("Error al importar catálogo:", err);
@@ -1971,7 +1977,7 @@ function AppContent() {
           </Button>
           {isSidebarOpen && (
             <div className="mt-2 text-center">
-              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.0.1 PRO</span>
+              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.3.0 PRO</span>
             </div>
           )}
         </div>
@@ -2588,14 +2594,20 @@ function AppContent() {
                       <Dialog open={isCreateClientOpen} onOpenChange={setIsCreateClientOpen}>
                         <DialogTrigger
                           className="inline-flex items-center justify-center rounded-md bg-amber-600 hover:bg-amber-500 text-white gap-2 font-bold uppercase tracking-widest text-xs h-10 px-6 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                          onClick={() => {
+                            setSelectedClientId(null);
+                            setNewClientData({ name: '', email: '', notes: '' });
+                          }}
                         >
                           <UserPlus className="w-4 h-4" /> Nuevo Cliente
                         </DialogTrigger>
                         <DialogContent className="bg-zinc-950 border-zinc-800 text-white">
                           <DialogHeader>
-                            <DialogTitle className="text-xl font-bold uppercase tracking-widest italic">Nuevo Cliente</DialogTitle>
+                            <DialogTitle className="text-xl font-bold uppercase tracking-widest italic">
+                              {selectedClientId ? 'Editar Perfil' : 'Nuevo Cliente'}
+                            </DialogTitle>
                             <DialogDescription className="text-zinc-500">
-                              Agrega los datos de contacto para tus galerías.
+                              {selectedClientId ? 'Modifica los datos del contacto.' : 'Agrega los datos de contacto para tus galerías.'}
                             </DialogDescription>
                           </DialogHeader>
                           <div className="space-y-4 py-4">
@@ -2629,7 +2641,9 @@ function AppContent() {
                           </div>
                           <DialogFooter>
                             <Button variant="outline" onClick={() => setIsCreateClientOpen(false)}>Cancelar</Button>
-                            <Button className="bg-amber-600 hover:bg-amber-500 text-white" onClick={handleCreateClient}>Guardar Cliente</Button>
+                            <Button className="bg-amber-600 hover:bg-amber-500 text-white" onClick={handleCreateClient}>
+                              {selectedClientId ? 'Actualizar' : 'Guardar Cliente'}
+                            </Button>
                           </DialogFooter>
                         </DialogContent>
                       </Dialog>
@@ -2688,7 +2702,7 @@ function AppContent() {
                                     <div className="flex items-center gap-3">
                                       <Button 
                                         variant="outline" 
-                                        className="border-zinc-800 h-10"
+                                        className="border-zinc-800 h-10 hover:bg-zinc-900 transition-colors"
                                         onClick={() => {
                                           if (selectedClient) {
                                             setNewClientData({
@@ -2700,7 +2714,18 @@ function AppContent() {
                                           }
                                         }}
                                       >
+                                        <Edit2 className="w-3.5 h-3.5 mr-2" />
                                         Editar Perfil
+                                      </Button>
+                                      <Button 
+                                        className="bg-amber-500 hover:bg-amber-600 text-black font-bold h-10"
+                                        onClick={() => {
+                                          setNewGalleryData({ title: '', clientId: selectedClientId! });
+                                          setIsCreateGalleryOpen(true);
+                                        }}
+                                      >
+                                        <Plus className="w-3.5 h-3.5 mr-2" />
+                                        Entregar Galería
                                       </Button>
                                     </div>
                                   </div>
@@ -3788,11 +3813,17 @@ function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
           const gData = snap.docs[0].data() as ClientGallery;
           setGallery({ ...gData, id: snap.docs[0].id });
           
-          if (gData.photoIds && gData.photoIds.length > 0) {
-            const pQuery = query(collection(db, "photos"), where("__name__", "in", gData.photoIds.slice(0, 30)));
-            const pSnap = await getDocs(pQuery);
-            setPhotos(pSnap.docs.map(d => ({ ...d.data(), id: d.id } as Photo)));
-          }
+        if (gData.photoIds && gData.photoIds.length > 0) {
+          // Optimized fetch for gallery photos
+          const pQuery = query(collection(db, "photos"), where("__name__", "in", gData.photoIds.slice(0, 50)));
+          const pSnap = await getDocs(pQuery);
+          // Maintain original order
+          const fetchedPhotos = pSnap.docs.map(d => ({ ...d.data(), id: d.id } as Photo));
+          const orderedPhotos = gData.photoIds
+            .map(pid => fetchedPhotos.find(p => p.id === pid))
+            .filter(Boolean) as Photo[];
+          setPhotos(orderedPhotos);
+        }
         }
       } catch (err) {
         console.error("Gallery fetch error:", err);

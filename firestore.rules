@@ -31,22 +31,25 @@ service cloud.firestore {
     }
 
     function isValidPhoto(data) {
-      return data.keys().hasAll(['userId', 'url', 'settings']) &&
+      return data.keys().hasAll(['userId', 'url', 'settings', 'size']) &&
              data.userId == request.auth.uid &&
-             data.url is string;
+             data.url is string &&
+             data.size is int &&
+             data.size < 524288000; // 500MB limit per file
     }
 
     function isValidFolder(data) {
-      return data.keys().hasAll(['id', 'userId', 'name']) &&
-             data.id is string &&
+      return data.keys().hasAll(['userId', 'name']) &&
              data.userId == request.auth.uid &&
-             data.name is string;
+             data.name is string &&
+             data.name.size() > 0 && data.name.size() <= 100;
     }
 
     function isValidClient(data) {
-      return data.keys().hasAll(['id', 'userId', 'name']) &&
+      return data.keys().hasAll(['userId', 'name']) &&
              data.userId == request.auth.uid &&
-             data.name is string;
+             data.name is string &&
+             data.name.size() > 0 && data.name.size() <= 100;
     }
 
     // ===============================================================

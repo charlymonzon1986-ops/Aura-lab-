@@ -285,14 +285,83 @@ async function startServer() {
         if (ph.url.startsWith('/api/b2-proxy/')) b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
         else b = (await axios.get(ph.url, { responseType: 'arraybuffer' })).data;
         const s = ph.settings;
-        let pipe = sharp(b).modulate({ brightness: (s.brightness || 100) / 100, saturation: (s.saturation || 100) / 100 });
-        if (s.contrast !== 100) pipe = pipe.linear((s.contrast || 100) / 100, -(s.contrast || 100) + 100);
+        
+        // Comprehensive adjustment pipeline using sharp
+        let pipe = sharp(b);
+        
+        // 1. Exposure / Brightness / Contrast
+        const brightness = (s.brightness || 100) / 100;
+        const exposureAdjustment = s.exposure || 0; // rough mapping
+        const saturation = (s.saturation || 100) / 100;
+        
+        // Modulate handles brightness, saturation
+        pipe = pipe.modulate({ 
+          brightness: brightness + (exposureAdjustment * 0.1), 
+          saturation: saturation 
+        });
+
+        // 2. Highlights / Shadows (Approximated with gamma and linear)
+        if (s.highlights < 100) pipe = pipe.gamma(0.8);
+        if (s.shadows > 100) pipe = pipe.gamma(1.2);
+
+        // 3. Contrast
+        if (s.contrast !== 100) {
+          pipe = pipe.linear((s.contrast || 100) / 100, -(s.contrast || 100) + 100);
+        }
+
+        // 4. Warmth / Tint (Approximated with tinting)
+        if (Math.abs(s.warmth - 100) > 5) {
+          const w = (s.warmth - 100) / 100;
+          pipe = pipe.tint({ r: 255, g: 255 - (w * 50), b: 255 - (w * 100) });
+        }
+
+        // 5. Sharpening / Noise
         if (s.sharpening > 0) pipe = pipe.sharpen({ sigma: s.sharpening / 20 });
-        if (s.noiseReduction > 0) pipe = pipe.blur(s.noiseReduction / 10);
+        if (s.noiseReduction > 0) pipe = pipe.blur((s.noiseReduction / 10) + 0.1);
+
+        // 6. Sepia / Vignette (Limited support in sharp but can do basic overlay)
+        if (s.sepia > 0) pipe = pipe.modulate({ saturation: 0 }).tint('#704214');
+
         arc.append(await pipe.jpeg({ quality }).toBuffer(), { name: `${ph.title || 'photo'}-${ph.id.slice(0, 5)}.jpg` });
       } catch {}
     }
     arc.finalize();
+  });
+
+  app.get("/api/gallery/download/:slug", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const gallerySnap = await fsDb.collection("galleries").where("slug", "==", slug).limit(1).get();
+      if (gallerySnap.empty) return res.status(404).send("Gallery not found");
+      
+      const gallery = gallerySnap.docs[0].data();
+      const photoIds = gallery.photoIds || [];
+      if (photoIds.length === 0) return res.status(400).send("Gallery is empty");
+
+      const arc = archiver('zip', { zlib: { level: 6 } });
+      res.attachment(`gallery-${slug}.zip`);
+      arc.pipe(res);
+
+      for (const pid of photoIds) {
+        try {
+          const photoDoc = await fsDb.collection("photos").doc(pid).get();
+          if (photoDoc.exists) {
+            const ph = photoDoc.data();
+            let b: Buffer;
+            if (ph.url.startsWith('/api/b2-proxy/')) b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
+            else b = (await axios.get(ph.url, { responseType: 'arraybuffer' })).data;
+            arc.append(b, { name: `${ph.title || 'photo'}-${pid.slice(0, 5)}.jpg` });
+          }
+        } catch (e) {}
+      }
+      arc.finalize();
+    } catch (err) {
+      res.status(500).send("Error generating download");
+    }
+  });
+
+  app.get("/api/version", (req, res) => {
+    res.json({ latest: "1.3.0" });
   });
 
   app.post("/api/delete-file", async (req, res) => {
