@@ -29,50 +29,48 @@ export function parseLrtemplate(content: string): Partial<LightingSettings> {
   // Actually, let's check our sliders in App.tsx to see the ranges.
   
   const lrExposure = getNum("Exposure");
-  if (lrExposure !== null) settings.exposure = lrExposure * 20; // -5 * 20 = -100
+  if (lrExposure !== null) settings.exposure = lrExposure; // Keep as is, LR Exposure is offset (stops)
 
   const lrContrast = getNum("Contrast");
-  if (lrContrast !== null) settings.contrast = 100 + lrContrast; // LR -100 to 100 -> our 0 to 200
+  if (lrContrast !== null) settings.contrast = Math.max(0, Math.min(200, 100 + lrContrast)); 
 
   const lrHighlights = getNum("Highlights");
-  if (lrHighlights !== null) settings.highlights = 100 + lrHighlights;
+  if (lrHighlights !== null) settings.highlights = Math.max(0, Math.min(200, 100 + lrHighlights));
 
   const lrShadows = getNum("Shadows");
-  if (lrShadows !== null) settings.shadows = 100 + lrShadows;
+  if (lrShadows !== null) settings.shadows = Math.max(0, Math.min(200, 100 + lrShadows));
 
   const lrWhites = getNum("Whites");
-  if (lrWhites !== null) settings.whites = 100 + lrWhites;
+  if (lrWhites !== null) settings.whites = Math.max(0, Math.min(200, 100 + lrWhites));
 
   const lrBlacks = getNum("Blacks");
-  if (lrBlacks !== null) settings.blacks = 100 + lrBlacks;
+  if (lrBlacks !== null) settings.blacks = Math.max(0, Math.min(200, 100 + lrBlacks));
 
   const lrSaturation = getNum("Saturation");
-  if (lrSaturation !== null) settings.saturation = 100 + lrSaturation;
+  if (lrSaturation !== null) settings.saturation = Math.max(0, Math.min(200, 100 + lrSaturation));
 
   const lrVibrance = getNum("Vibrance");
-  if (lrVibrance !== null) settings.vibrance = 100 + lrVibrance;
+  if (lrVibrance !== null) settings.vibrance = Math.max(0, Math.min(200, 100 + lrVibrance));
 
   const lrClarity = getNum("Clarity2012") || getNum("Clarity");
-  if (lrClarity !== null) settings.clarity = lrClarity;
+  if (lrClarity !== null) settings.clarity = Math.max(-100, Math.min(100, lrClarity));
 
   const lrDehaze = getNum("Dehaze");
-  if (lrDehaze !== null) settings.dehaze = lrDehaze;
+  if (lrDehaze !== null) settings.dehaze = Math.max(-100, Math.min(100, lrDehaze));
 
   const lrTexture = getNum("Texture");
-  if (lrTexture !== null) settings.texture = lrTexture;
+  if (lrTexture !== null) settings.texture = Math.max(-100, Math.min(100, lrTexture));
 
   const lrSharpness = getNum("Sharpness");
-  if (lrSharpness !== null) settings.sharpening = lrSharpness;
+  if (lrSharpness !== null) settings.sharpening = Math.max(0, Math.min(100, lrSharpness));
 
   const lrTemp = getNum("Temperature");
   if (lrTemp !== null) {
-    // LR Temp is usually 2000-50000. Our warmth is -100 to 100.
-    // This is a rough approximation.
-    settings.warmth = (lrTemp - 5500) / 50; 
+    settings.warmth = Math.max(-100, Math.min(100, (lrTemp - 5500) / 50)); 
   }
 
   const lrTint = getNum("Tint");
-  if (lrTint !== null) settings.tint = lrTint;
+  if (lrTint !== null) settings.tint = Math.max(-100, Math.min(100, lrTint));
 
   return settings;
 }

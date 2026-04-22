@@ -140,6 +140,7 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
   const canvasRef = (ref as React.RefObject<HTMLCanvasElement>) || internalCanvasRef;
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [img, setImg] = React.useState<HTMLImageElement | null>(null);
+  const rendererRef = React.useRef<WebGLRenderer | null>(null);
 
   // Load image
   React.useEffect(() => {
@@ -150,14 +151,26 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
     i.src = imageUrl;
   }, [imageUrl]);
 
+  // Clean up renderer on unmount
+  React.useEffect(() => {
+    return () => {
+      if (rendererRef.current) {
+        rendererRef.current.destroy();
+        rendererRef.current = null;
+      }
+    };
+  }, []);
+
   // Render loop
   React.useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!canvas || !container || !img) return;
+
+    let isDestroyed = false;
 
     const updateSize = async () => {
-      if (!img) return;
+      if (!img || isDestroyed) return;
       
       const { width: containerWidth, height: containerHeight } = container.getBoundingClientRect();
       if (containerWidth === 0 || containerHeight === 0) return;
@@ -184,14 +197,79 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
       canvas.style.width = `${drawWidth}px`;
       canvas.style.height = `${drawHeight}px`;
       
-      await renderImageToCanvas(canvas, img, settings, {
-        isComparing,
-        compareValue,
-        width: drawWidth * dpr,
-        height: drawHeight * dpr
-      });
+      const w = drawWidth * dpr;
+      const h = drawHeight * dpr;
+      canvas.width = w;
+      canvas.height = h;
 
-      if (onImageReady) onImageReady(canvas);
+      try {
+        if (!rendererRef.current) {
+          rendererRef.current = new WebGLRenderer(canvas);
+          rendererRef.current.setImage(img);
+          (canvas as any)._lastImg = img;
+        }
+        const renderer = rendererRef.current;
+        
+        if ((canvas as any)._lastImg !== img) {
+          renderer.setImage(img);
+          (canvas as any)._lastImg = img;
+        }
+
+        if (isComparing) {
+          const gl = canvas.getContext('webgl')!;
+          gl.enable(gl.SCISSOR_TEST);
+          const splitX = Math.floor(w * (compareValue / 100));
+          gl.scissor(0, 0, splitX, h);
+          renderer.render({ ...settings, exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null }, w, h);
+          gl.scissor(splitX, 0, w - splitX, h);
+          renderer.render(settings, w, h);
+          gl.disable(gl.SCISSOR_TEST);
+        } else {
+          renderer.render(settings, w, h);
+        }
+
+        if (onImageReady) onImageReady(canvas);
+      } catch (e) {
+        console.warn("WebGL failed, using fallback:", e);
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, w, h);
+          if (isComparing) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, w * (compareValue / 100), h);
+            ctx.clip();
+            ctx.filter = 'none';
+            ctx.drawImage(img, 0, 0, w, h);
+            ctx.restore();
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(w * (compareValue / 100), 0, w, h);
+            ctx.clip();
+          }
+
+          ctx.filter = getFilterString(settings);
+          ctx.save();
+          
+          const cropX = (settings.cropLeft / 100) * img.width;
+          const cropY = (settings.cropTop / 100) * img.height;
+          const cropW = img.width * (1 - (settings.cropLeft + settings.cropRight) / 100);
+          const cropH = img.height * (1 - (settings.cropTop + settings.cropBottom) / 100);
+          
+          ctx.translate(w / 2, h / 2);
+          ctx.rotate((settings.rotation * Math.PI) / 180);
+          ctx.scale(settings.flipX ? -1 : 1, settings.flipY ? -1 : 1);
+          
+          const rotVal = Math.abs(settings.rotation % 360);
+          const isVert = rotVal === 90 || rotVal === 270;
+          const dW = isVert ? h : w;
+          const dH = isVert ? w : h;
+          
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, -dW / 2, -dH / 2, dW, dH);
+          ctx.restore();
+          if (isComparing) ctx.restore();
+        }
+      }
     };
 
     const resizeObserver = new ResizeObserver(() => {
@@ -201,7 +279,10 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
     resizeObserver.observe(container);
     updateSize(); // Initial call
 
-    return () => resizeObserver.disconnect();
+    return () => {
+      isDestroyed = true;
+      resizeObserver.disconnect();
+    };
   }, [img, settings, isComparing, compareValue]);
 
   return (

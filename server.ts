@@ -22,7 +22,6 @@ import { MercadoPagoConfig, Preference } from 'mercadopago';
 import { Resend } from 'resend';
 import B2 from 'backblaze-b2';
 import archiver from 'archiver';
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import admin from 'firebase-admin';
 import os from 'os';
 
@@ -113,12 +112,13 @@ async function startServer() {
     }
     try {
       await b2.authorize();
+      console.log("✅ B2 Authorized successfully");
       b2Authorized = true;
-      console.log("✅ B2 Authorized");
+      // Refresh every 12h
+      setTimeout(() => { b2Authorized = false; }, 12 * 60 * 60 * 1000);
     } catch (err) {
-      console.error("❌ B2 Auth Failed:", err);
-      // Mark as tried to avoid infinite loop on every request
-      b2Authorized = true;
+      console.error("❌ B2 Authorization failed:", err);
+      // Don't set b2Authorized=true so it can retry
     }
   }
 
@@ -257,7 +257,13 @@ async function startServer() {
   }
 
   app.get("/api/admin/config-check", (req, res) => {
-    res.json({ gemini: !!process.env.GEMINI_API_KEY, mp: !!process.env.MERCADOPAGO_ACCESS_TOKEN, resend: !!process.env.RESEND_API_KEY, b2: !!process.env.B2_APPLICATION_KEY, prod: isProd });
+    res.json({ 
+      gemini_ai: !!process.env.GEMINI_API_KEY, 
+      mercadopago: !!process.env.MERCADOPAGO_ACCESS_TOKEN, 
+      resend: !!process.env.RESEND_API_KEY, 
+      b2: !!process.env.B2_APPLICATION_KEY, 
+      prod: isProd 
+    });
   });
 
   app.get("/api/config/gemini", (req, res) => {
@@ -269,15 +275,32 @@ async function startServer() {
     try {
       const { planName, price, userId } = req.body;
       const pref = new Preference(getMP());
+      const hostUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+
       const result = await pref.create({
         body: {
-          items: [{ id: planName, title: `Aura Plan ${planName}`, quantity: 1, unit_price: Number(price), currency_id: 'ARS' }],
-          back_urls: { success: `${req.headers.origin}/payment-success`, failure: `${req.headers.origin}/payment-failure`, pending: `${req.headers.origin}/payment-pending` },
-          auto_return: 'approved', external_reference: userId, notification_url: `${req.headers.origin}/api/webhook/mercadopago`
+          items: [{ 
+            id: planName, 
+            title: `Aura Plan ${planName}`, 
+            quantity: 1, 
+            unit_price: Number(price), 
+            currency_id: 'ARS' 
+          }],
+          back_urls: { 
+            success: `${hostUrl}/payment-success`, 
+            failure: `${hostUrl}/payment-failure`, 
+            pending: `${hostUrl}/payment-pending` 
+          },
+          auto_return: 'approved', 
+          external_reference: userId, 
+          notification_url: `${hostUrl}/api/webhook/mercadopago`
         }
       });
       res.json({ id: result.id, init_point: result.init_point });
-    } catch (e) { res.status(500).json({ error: "MP Error" }); }
+    } catch (e) { 
+      console.error("MP Preference Error:", e);
+      res.status(500).json({ error: "MP Error" }); 
+    }
   });
 
   app.post("/api/webhook/mercadopago", async (req, res) => {
@@ -408,7 +431,7 @@ async function startServer() {
   });
 
   app.get("/api/version", (req, res) => {
-    res.json({ latest: "1.3.0" });
+    res.json({ latest: "1.3.1" });
   });
 
   app.post("/api/delete-file", async (req, res) => {
@@ -418,36 +441,6 @@ async function startServer() {
       if (thumbnailUrl && thumbnailUrl !== url) await deleteFromB2(thumbnailUrl);
       res.json({ success: true });
     } catch { res.status(500).send("Error"); }
-  });
-
-  app.post("/api/ai/enhance", async (req, res) => {
-    try {
-      const { prompt, imageData, mimeType } = req.body;
-      const key = process.env.GEMINI_API_KEY;
-      if (!key) return res.status(500).json({ error: "Gemini API key not configured on server" });
-
-      const genAI = new GoogleGenerativeAI(key);
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        generationConfig: { responseMimeType: "application/json" }
-      });
-
-      const result = await model.generateContent([
-        { text: prompt },
-        {
-          inlineData: {
-            mimeType: mimeType || "image/jpeg",
-            data: imageData // Expecting base64 string without prefix
-          }
-        }
-      ]);
-
-      const response = await result.response;
-      res.json({ text: response.text() });
-    } catch (err: any) {
-      console.error("Gemini Server Error:", err);
-      res.status(500).json({ error: err.message || "AI Error" });
-    }
   });
 
   app.post("/api/upload", upload.single("file"), async (req, res) => {
@@ -488,7 +481,17 @@ async function startServer() {
 
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) {
-        res.sendFile(indexPath);
+        // Inject GEMINI_API_KEY into the HTML so the client can use it
+        // This is necessary because in full-stack apps, client-side code doesn't have access to server environment variables
+        try {
+          let html = fs.readFileSync(indexPath, 'utf8');
+          const key = process.env.GEMINI_API_KEY || '';
+          // Inject as a global variable before the head tag ends
+          html = html.replace('</head>', `<script>window.GEMINI_API_KEY="${key}";</script></head>`);
+          res.send(html);
+        } catch (e) {
+          res.sendFile(indexPath);
+        }
       } else {
         console.error(`❌ Static file not found at: ${indexPath}`);
         console.log(`📂 Current Dir: ${process.cwd()}, APP_DIR: ${APP_DIR}`);

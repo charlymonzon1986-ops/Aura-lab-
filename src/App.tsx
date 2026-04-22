@@ -1,7 +1,7 @@
 import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { 
   X,
   LayoutGrid, 
@@ -122,30 +122,54 @@ const fixImageUrlLocal = (url: string) => {
 };
 
 // Safe initialization of Gemini AI
-let aiInstance: GoogleGenerativeAI | null = null;
-try {
-  // Using import.meta.env for Vite compatibility
-  const key = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY;
-  if (key && key !== "undefined" && key.trim() !== "") {
-    aiInstance = new GoogleGenerativeAI(key);
+let aiInstance: GoogleGenAI | null = null;
+
+// Helper to get or initialize the AI instance with multiple key source lookups
+const getAI = () => {
+  if (aiInstance) return aiInstance;
+  
+  let key: string | undefined = undefined;
+  
+  try {
+    // 1. Try standard process.env (platform guideline)
+    key = (process.env as any).GEMINI_API_KEY;
+    
+    // 2. Try window global (sometimes used in platform iframes)
+    if (!key || key === "undefined") {
+      key = (window as any).GEMINI_API_KEY || (window as any).process?.env?.GEMINI_API_KEY;
+    }
+    
+    // 3. Try Vite env (as a fallback if process.env was replaced during build)
+    if (!key || key === "undefined") {
+      key = (import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.GEMINI_API_KEY;
+    }
+  } catch (e) {
+    console.warn("Non-critical: Error looking up Gemini key sources:", e);
   }
-} catch (e) {
-  console.error("Critical: Failed to pre-initialize Gemini AI:", e);
-}
+
+  if (key && key !== "undefined" && key.trim() !== "") {
+    console.log("✅ Gemini AI initialized with key from environment");
+    aiInstance = new GoogleGenAI({ apiKey: key });
+    return aiInstance;
+  }
+  
+  return null;
+};
 
 // Helper to safely parse AI JSON that might be wrapped in markdown
 const parseAIJSON = (text: string) => {
+  const cleanText = text.trim();
   try {
     // Try clean JSON first
-    return JSON.parse(text);
+    return JSON.parse(cleanText);
   } catch (e) {
     // Try to extract from markdown if present
-    const match = text.match(/```json\n([\s\S]*?)\n```/) || text.match(/```([\s\S]*?)```/);
+    const match = cleanText.match(/```json\s*([\s\S]*?)\s*```/) || cleanText.match(/```([\s\S]*?)```/);
     if (match && match[1]) {
       try {
-        return JSON.parse(match[1]);
+        return JSON.parse(match[1].trim());
       } catch (e2) {
-        throw new Error("No se pudo procesar el formato de respuesta de la IA");
+        throw new Error("No se pudo procesar el formato de respuesta de la IA (JSON inválido)");
       }
     }
     throw e;
@@ -339,7 +363,7 @@ function AppContent() {
     const checkUpdate = async () => {
       try {
         const response = await axios.get('/api/version');
-        if (response.data.latest !== "1.3.0") {
+        if (response.data.latest !== "1.3.1") {
           setLatestVersion(response.data.latest);
           setShowUpdateAvailable(true);
         }
@@ -1300,9 +1324,18 @@ function AppContent() {
     }
   };
 
-  const resetSettings = (id: string) => {
+  const resetSettings = React.useCallback((id: string) => {
     updatePhotoSettings(id, { ...DEFAULT_SETTINGS });
-  };
+  }, [updatePhotoSettings]);
+
+  const handleEditorChange = React.useCallback((s: LightingSettings) => {
+    if (!selectedPhotoId) return;
+    updatePhotoSettings(selectedPhotoId, s);
+  }, [selectedPhotoId, updatePhotoSettings]);
+
+  const handleEditorPreview = React.useCallback((s: LightingSettings) => {
+    setPreviewSettings(s);
+  }, []);
 
   const handleLightroomImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1383,16 +1416,20 @@ function AppContent() {
 
       // Convert to base64
       const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve, reject) => {
+      const base64Promise = new Promise<{data: string, mimeType: string}>((resolve, reject) => {
         reader.onloadend = () => {
-          const base64 = (reader.result as string).split(',')[1];
+          const result = reader.result as string;
+          const commaIndex = result.indexOf(',');
+          const base64 = result.substring(commaIndex + 1);
+          const mimeType = result.substring(5, commaIndex).split(';')[0];
+          
           if (!base64) reject(new Error("No se pudo convertir la imagen a base64"));
-          resolve(base64);
+          resolve({ data: base64, mimeType });
         };
         reader.onerror = () => reject(new Error("Error al leer el archivo de imagen"));
         reader.readAsDataURL(blob);
       });
-      const base64Content = await base64Promise;
+      const { data: base64Data, mimeType: detectedMimeType } = await base64Promise;
 
       console.log("Sending request to Gemini for Smart Enhance...");
 
@@ -1424,18 +1461,35 @@ function AppContent() {
       - whites (85-100, 100 es neutro)
       - blacks (95-105, 100 es neutro)`;
 
-      // Call Server Proxy instead of Direct Client SDK for better reliability and security
-      const response = await axios.post("/api/ai/enhance", {
-        prompt: fullPrompt,
-        imageData: base64Content.split(',')[1], // Just the data part
-        mimeType: blob.type || "image/jpeg"
+      console.log("Sending request to Gemini for Smart Enhance...");
+      const ai = getAI();
+      if (!ai) {
+        throw new Error("La función de IA no está configurada (falta la clave API en el entorno)");
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            { text: fullPrompt },
+            {
+              inlineData: {
+                mimeType: detectedMimeType || "image/jpeg",
+                data: base64Data
+              }
+            }
+          ]
+        },
+        config: {
+          responseMimeType: "application/json"
+        }
       });
 
-      if (!response.data || !response.data.text) {
+      if (!response || !response.text) {
         throw new Error("No se recibió respuesta válida de la IA");
       }
 
-      const responseText = response.data.text;
+      const responseText = response.text;
       console.log("Gemini response received for Smart Enhance:", responseText);
       const aiData = parseAIJSON(responseText);
       
@@ -1606,18 +1660,34 @@ function AppContent() {
       Responde ÚNICAMENTE con el JSON.`;
 
       console.log("Sending request to Gemini...");
-      // Call Server Proxy for security and reliability
-      const response = await axios.post("/api/ai/enhance", {
-        prompt: prompt,
-        imageData: imageData,
-        mimeType: blob.type || "image/jpeg"
+      const ai = getAI();
+      if (!ai) {
+        throw new Error("La función de IA no está configurada (falta la clave API en el entorno)");
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: blob.type || "image/jpeg",
+                data: imageData
+              }
+            }
+          ]
+        },
+        config: {
+          responseMimeType: "application/json"
+        }
       });
 
-      if (!response.data || !response.data.text) {
+      if (!response || !response.text) {
         throw new Error("No se recibió respuesta válida de la IA");
       }
 
-      const responseText = response.data.text;
+      const responseText = response.text;
       console.log("Gemini response received:", responseText);
       const analysis = parseAIJSON(responseText);
 
@@ -1956,7 +2026,7 @@ function AppContent() {
           </Button>
           {isSidebarOpen && (
             <div className="mt-2 text-center">
-              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.3.0 PRO</span>
+              <span className="text-[9px] text-zinc-700 font-mono tracking-tighter">v1.3.1 PRO</span>
             </div>
           )}
         </div>
@@ -1998,7 +2068,7 @@ function AppContent() {
           
           <div className="flex items-center gap-2 md:gap-4">
             <Badge variant="outline" className="bg-zinc-900 border-zinc-800 text-zinc-500 font-mono text-[8px] md:text-[9px] px-1 md:px-2">
-              v1.3.0
+              v1.3.1
             </Badge>
           </div>
         </header>
@@ -3361,11 +3431,8 @@ function AppContent() {
                               {/* Main Controls */}
                               <LightingControls 
                                 settings={previewSettings || selectedPhoto.settings} 
-                                onChange={(s) => {
-                                  updatePhotoSettings(selectedPhoto.id, s);
-                                  setPreviewSettings(s);
-                                }}
-                                onPreviewChange={setPreviewSettings}
+                                onChange={handleEditorChange}
+                                onPreviewChange={handleEditorPreview}
                                 userPlan={userProfile?.plan || 'free'}
                                 onSmartEnhance={(p) => smartEnhance(selectedPhoto.id, p)}
                                 isAutoEnhancing={isAutoEnhancing}
