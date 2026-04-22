@@ -1,27 +1,72 @@
 // Using global initSqlJs from index.html script tag
-// import initSqlJs from 'sql.js';
-
 let db: any = null;
+
+// IndexedDB Helper
+const DB_NAME = 'aura_lab_db';
+const STORE_NAME = 'sqlite_store';
+const DB_KEY = 'aura_local_db';
+
+async function openIDB() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(STORE_NAME);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getFromIDB() {
+  const idb = await openIDB();
+  return new Promise<Uint8Array | null>((resolve, reject) => {
+    const transaction = idb.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get(DB_KEY);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveToIDB(data: Uint8Array) {
+  const idb = await openIDB();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = idb.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.put(data, DB_KEY);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
 
 export async function initLocalDB() {
   if (db) return db;
   
-  const initSqlJsGlobal = (window as any).initSqlJs;
-  if (!initSqlJsGlobal) {
-    throw new Error("sql.js not loaded from script tag");
-  }
-
-  const SQL = await initSqlJsGlobal({
-    locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`
-  });
-  
-  // Issue 5.3 Fix: Try to load from localStorage
+  let SQL;
   try {
-    const saved = localStorage.getItem('aura_local_db');
+    const initSqlJsGlobal = (window as any).initSqlJs;
+    if (!initSqlJsGlobal) {
+      throw new Error("sql.js not loaded from script tag");
+    }
+
+    SQL = await initSqlJsGlobal({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`
+    });
+  } catch (err) {
+    console.error("❌ Error initializing sql.js:", err);
+    // Return a mock DB that doesn't crash but logs errors
+    return {
+      run: () => console.warn("SQL operation skipped: SQL not loaded"),
+      exec: () => [],
+      export: () => new Uint8Array()
+    };
+  }
+  
+  try {
+    const saved = await getFromIDB();
     if (saved) {
-      const buffer = new Uint8Array(saved.split(',').map(Number));
-      db = new SQL.Database(buffer);
-      console.log("💾 Local DB loaded from persistence");
+      db = new SQL.Database(saved);
+      console.log("💾 Local DB loaded from IndexedDB persistence");
     } else {
       db = new SQL.Database();
     }
@@ -46,11 +91,11 @@ export async function initLocalDB() {
   return db;
 }
 
-function persistDB() {
+async function persistDB() {
   if (!db) return;
   try {
     const data = db.export();
-    localStorage.setItem('aura_local_db', data.toString());
+    await saveToIDB(data);
   } catch (e) {
     console.error("Failed to persist local DB", e);
   }

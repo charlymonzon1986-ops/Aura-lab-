@@ -124,31 +124,21 @@ const fixImageUrlLocal = (url: string) => {
 // Safe initialization of Gemini AI
 let aiInstance: GoogleGenAI | null = null;
 
-// Helper to get or initialize the AI instance with multiple key source lookups
+// Helper to get or initialize the AI instance
 const getAI = () => {
   if (aiInstance) return aiInstance;
   
   let key: string | undefined = undefined;
   
   try {
-    // 1. Try standard process.env (platform guideline)
+    // Standard process.env (platform guideline)
     key = (process.env as any).GEMINI_API_KEY;
-    
-    // 2. Try window global (sometimes used in platform iframes)
-    if (!key || key === "undefined") {
-      key = (window as any).GEMINI_API_KEY || (window as any).process?.env?.GEMINI_API_KEY;
-    }
-    
-    // 3. Try Vite env (as a fallback if process.env was replaced during build)
-    if (!key || key === "undefined") {
-      key = (import.meta as any).env.VITE_GEMINI_API_KEY || (import.meta as any).env.GEMINI_API_KEY;
-    }
   } catch (e) {
     console.warn("Non-critical: Error looking up Gemini key sources:", e);
   }
 
   if (key && key !== "undefined" && key.trim() !== "") {
-    console.log("✅ Gemini AI initialized with key from environment");
+    console.log("✅ Gemini AI initialized");
     aiInstance = new GoogleGenAI({ apiKey: key });
     return aiInstance;
   }
@@ -242,6 +232,20 @@ export default function App() {
 function AppContent() {
   // 1. All States
   const [user, setUser] = React.useState<User | null>(null);
+  
+  // Axios Auth Interceptor
+  React.useEffect(() => {
+    const requestInterceptor = axios.interceptors.request.use(async (config) => {
+      const currentUser = auth.currentUser;
+      if (currentUser) {
+        const token = await currentUser.getIdToken();
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    });
+    return () => axios.interceptors.request.eject(requestInterceptor);
+  }, []);
+
   const [userProfile, setUserProfile] = React.useState<UserProfile | null>(null);
   const [photos, setPhotos] = React.useState<Photo[]>([]);
   const [folders, setFolders] = React.useState<Folder[]>([]);
@@ -405,27 +409,18 @@ function AppContent() {
           // Check/Create User Profile
           const userDocRef = doc(db, "users", currentUser.uid);
           
-          const adminEmailsStr = (import.meta as any).env?.VITE_ADMIN_EMAILS;
-          const adminEmails = adminEmailsStr ? adminEmailsStr.split(",") : [];
-          const isAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
-          
           const userDoc = await getDoc(userDocRef);
           if (!userDoc.exists()) {
             const profile: UserProfile = {
               uid: currentUser.uid,
               email: currentUser.email || "",
               displayName: currentUser.displayName || "Usuario",
-              role: isAdmin ? "admin" : "user",
-              plan: isAdmin ? "studio" : "free",
+              role: "user",
+              plan: "free",
               storageUsed: 0,
               createdAt: new Date().toISOString()
             };
             await setDoc(userDocRef, profile);
-          } else {
-            const data = userDoc.data() as UserProfile;
-            if (isAdmin && (data.role !== 'admin' || data.plan !== 'studio')) {
-              await updateDoc(userDocRef, { role: 'admin', plan: 'studio' });
-            }
           }
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, "users/" + (currentUser?.uid || "unknown"));
@@ -1224,15 +1219,18 @@ function AppContent() {
     const toastId = toast.loading(`Importando ${files.length} presets...`);
 
     try {
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file.name.toLowerCase().endsWith('.lrtemplate')) continue;
 
-        // Update toast with progress
-        toast.loading(`Importando ${i + 1}/${files.length}: ${file.name}`, { id: toastId });
+        // Update toast with progress every 10 files
+        if (i % 10 === 0) {
+          toast.loading(`Procesando ${i + 1}/${files.length}: ${file.name}`, { id: toastId });
+        }
 
-        // Get category from folder name
-        // webkitRelativePath is like "folder/subfolder/file.lrtemplate"
         const pathParts = file.webkitRelativePath.split('/');
         const category = pathParts.length > 1 ? pathParts[pathParts.length - 2] : "General";
         const name = file.name.replace(/\.lrtemplate$/i, '');
@@ -1242,20 +1240,33 @@ function AppContent() {
           const partialSettings = parseLrtemplate(content);
           const settings = mergeWithDefaults(partialSettings);
 
-          await addDoc(collection(db, "presets"), {
+          const presetRef = doc(collection(db, "presets"));
+          batch.set(presetRef, {
             userId: user?.uid,
             name,
             category,
             settings,
             createdAt: serverTimestamp(),
-            isSystem: true, // Bulk imports are usually system presets
+            isSystem: true,
             planRequired: bulkImportPlan
           });
+          
           importedCount++;
+          batchCount++;
+
+          if (batchCount >= 400) {
+            await batch.commit();
+            batch = writeBatch(db);
+            batchCount = 0;
+          }
         } catch (err) {
           console.error(`Error importing ${file.name}:`, err);
           errorCount++;
         }
+      }
+
+      if (batchCount > 0) {
+        await batch.commit();
       }
 
       toast.success(`Importación completada: ${importedCount} presets guardados.`, { id: toastId });
@@ -1468,7 +1479,7 @@ function AppContent() {
       }
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-flash-latest",
         contents: {
           parts: [
             { text: fullPrompt },
@@ -3244,24 +3255,6 @@ function AppContent() {
                     onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseUp}
                     onDoubleClick={resetZoom}
-                    onWheel={(e) => {
-                      e.preventDefault();
-                      const delta = e.deltaY;
-                      const factor = 0.002;
-                      const zoomChange = -delta * factor;
-                      
-                      setZoom(prev => {
-                        const newZoom = Math.min(10, Math.max(0.1, prev + zoomChange));
-                        return newZoom;
-                      });
-                      
-                      if (!e.ctrlKey && !e.metaKey && Math.abs(e.deltaX) > 0.5) {
-                        setPan(prev => ({
-                          x: prev.x - e.deltaX,
-                          y: prev.y - e.deltaY
-                        }));
-                      }
-                    }}
                   >
                   {!selectedPhoto ? (
                     <div className="text-center p-8">
@@ -3889,11 +3882,21 @@ function PublicGallery({ slug, onBack }: { slug: string, onBack: () => void }) {
           setGallery({ ...gData, id: snap.docs[0].id });
           
         if (gData.photoIds && gData.photoIds.length > 0) {
-          // Optimized fetch for gallery photos
-          const pQuery = query(collection(db, "photos"), where("__name__", "in", gData.photoIds.slice(0, 50)));
-          const pSnap = await getDocs(pQuery);
+          // Optimized fetch for gallery photos with chunking for large galleries
+          const chunks = [];
+          for (let i = 0; i < gData.photoIds.length; i += 30) {
+            chunks.push(gData.photoIds.slice(i, i + 30));
+          }
+          
+          const pSnaps = await Promise.all(chunks.map(chunk => 
+            getDocs(query(collection(db, "photos"), where("__name__", "in", chunk)))
+          ));
+          
+          const fetchedPhotos = pSnaps.flatMap(pSnap => 
+            pSnap.docs.map(d => ({ ...d.data(), id: d.id } as Photo))
+          );
+          
           // Maintain original order
-          const fetchedPhotos = pSnap.docs.map(d => ({ ...d.data(), id: d.id } as Photo));
           const orderedPhotos = gData.photoIds
             .map(pid => fetchedPhotos.find(p => p.id === pid))
             .filter(Boolean) as Photo[];
