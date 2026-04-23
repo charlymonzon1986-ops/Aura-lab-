@@ -139,7 +139,7 @@ export class WebGLRenderer {
   }
 
   private hexToRgb(hex: string): [number, number, number] {
-    if (!hex || hex === "transparent") return [0, 0, 0];
+    if (!hex || typeof hex !== 'string' || hex === "transparent") return [0, 0, 0];
     
     if (hex.startsWith("hsl")) {
       // Parse hsla(h, s%, l%, a)

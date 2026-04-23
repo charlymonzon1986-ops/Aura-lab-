@@ -134,10 +134,10 @@ async function startServer() {
       }
     }
     fsDb = getFirestore(admin.app(), fbConfig.firestoreDatabaseId);
-    console.log("✅ Firebase initialized");
+    console.log(`✅ Firebase initialized for project: ${fbConfig.projectId}, DB: ${fbConfig.firestoreDatabaseId || '(default)'}`);
   } catch (err) {
     console.error("⚠️ Firebase Fallback:", err);
-    fsDb = { collection: () => ({ doc: () => ({ get: () => Promise.resolve({ exists: false }), update: () => Promise.resolve() }) }) } as any;
+    fsDb = { collection: () => ({ doc: () => ({ get: () => Promise.resolve({ exists: false }), update: () => Promise.resolve(), set: () => Promise.resolve() }) }) } as any;
   }
 
   const b2 = new B2({
@@ -281,6 +281,7 @@ async function startServer() {
     try {
       const data = await downloadFromB2(req.params.fileName);
       res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       const ext = path.extname(req.params.fileName).toLowerCase();
       const mimes: any = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
       if (mimes[ext]) res.setHeader('Content-Type', mimes[ext]);
@@ -309,22 +310,23 @@ async function startServer() {
     return resendClient;
   }
 
-  app.get("/api/admin/config-check", authenticate, (req: any, res) => {
-    // Only admins
-    const envAdmins = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || process.env.ADMIN_EMAIL || '').split(',').map(e => e.trim().toLowerCase());
-    const hardcodedAdmins = ['juanomonzon@gmail.com', 'ruth1094@gmail.com', 'charlymonzon.1986@gmail.com'];
-    const admins = [...new Set([...envAdmins, ...hardcodedAdmins])].filter(Boolean);
-
-    if (!admins.includes(req.user.email?.toLowerCase())) {
-      return res.status(403).json({ error: "Forbidden" });
+  app.get("/api/admin/config-check", authenticate, async (req: any, res) => {
+    try {
+      const userDoc = await fsDb.collection("users").doc(req.user.uid).get();
+      if (!userDoc.exists || userDoc.data()?.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden: Admins only" });
+      }
+      
+      res.json({ 
+        gemini_ai: !!process.env.GEMINI_API_KEY, 
+        mercadopago: !!process.env.MERCADOPAGO_ACCESS_TOKEN, 
+        resend: !!process.env.RESEND_API_KEY, 
+        b2: !!process.env.B2_APPLICATION_KEY, 
+        prod: isProd 
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Check failed" });
     }
-    res.json({ 
-      gemini_ai: !!process.env.GEMINI_API_KEY, 
-      mercadopago: !!process.env.MERCADOPAGO_ACCESS_TOKEN, 
-      resend: !!process.env.RESEND_API_KEY, 
-      b2: !!process.env.B2_APPLICATION_KEY, 
-      prod: isProd 
-    });
   });
 
   // REMOVED INSECURE ENDPOINT /api/config/gemini
@@ -365,10 +367,9 @@ async function startServer() {
   app.post("/api/webhook/mercadopago", async (req, res) => {
     try {
       const { action, data } = req.body;
-      const signature = req.headers['x-signature'] as string;
       
-      // Verify signature if possible (simplified for now but more secure than before)
-      // Real verification would use MercadoPago SDK's internal verification
+      // Note: Real signature verification would require a secret key (MERCADOPAGO_WEB_HOOK_SECRET)
+      // and checking the x-signature header using crypto.
       
       if (action === "payment.created" || req.query.topic === "payment") {
         const paymentId = data?.id || req.query.id;
@@ -578,7 +579,18 @@ async function startServer() {
       let thumb = url;
       const tb = await generateThumbnail(file.buffer, file.originalname);
       if (tb) thumb = await uploadToB2(tb, `thumb-${ts}-${path.parse(name).name}.jpg`, 'image/jpeg');
-      await fsDb.collection("users").doc(userId).update({ storageUsed: admin.firestore.FieldValue.increment(file.size), lastUploadAt: new Date().toISOString() });
+      // Profile update (Use set with merge: true to avoid PERMISSION_DENIED/NOT_FOUND if doc is missing)
+      try {
+        await fsDb.collection("users").doc(userId).set({ 
+          storageUsed: admin.firestore.FieldValue.increment(file.size), 
+          lastUploadAt: new Date().toISOString() 
+        }, { merge: true });
+      } catch (dbErr: any) {
+        console.error("⚠️ Firestore Profile Update Failed:", dbErr.message);
+        // We don't fail the whole upload if just the metadata update fails, 
+        // but we log it clearly for debugging permissions.
+      }
+      
       res.json({ url, thumbnailUrl: thumb });
     } catch (err: any) { 
       console.error("Upload Route Error:", err);
@@ -587,7 +599,7 @@ async function startServer() {
     }
   });
 
-  // AI Proxy Route
+  // AI Proxy Routes
   app.post("/api/ai/smart-enhance", authenticate, async (req: any, res) => {
     try {
       if (!genAI) {
@@ -600,19 +612,20 @@ async function startServer() {
       }
 
       const response = await genAI.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                data: imageData,
-                mimeType: mimeType || "image/jpeg"
+        model: "gemini-2.0-flash",
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  data: imageData,
+                  mimeType: mimeType || "image/jpeg"
+                }
               }
-            }
-          ]
-        }]
+            ]
+          }
+        ]
       });
 
       let text = response.text || "";
@@ -624,6 +637,45 @@ async function startServer() {
     } catch (error: any) {
       console.error("Gemini AI Error:", error);
       res.status(500).json({ error: error.message || "Error processing AI request" });
+    }
+  });
+
+  app.post("/api/ai/analyze-photo", authenticate, async (req: any, res) => {
+    try {
+      if (!genAI) {
+        return res.status(500).json({ error: "Gemini API key not configured on server" });
+      }
+
+      const { prompt, imageData, mimeType } = req.body;
+      if (!imageData) {
+        return res.status(400).json({ error: "No image data provided" });
+      }
+
+      const response = await genAI.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  data: imageData,
+                  mimeType: mimeType || "image/jpeg"
+                }
+              }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const text = response.text || "";
+      res.json({ result: text });
+    } catch (error: any) {
+      console.error("Gemini Analyze Error:", error);
+      res.status(500).json({ error: error.message || "Error analyzing photo" });
     }
   });
 

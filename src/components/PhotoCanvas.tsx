@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { LightingSettings } from "../types";
 import { getFilterString } from "../lib/imageProcessing";
 import { WebGLRenderer } from "../lib/webglRenderer";
@@ -144,11 +145,37 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
 
   // Load image
   React.useEffect(() => {
-    if (!imageUrl) return;
+    if (!imageUrl) {
+      console.log("PhotoCanvas: No imageUrl provided");
+      return;
+    }
+    
+    console.log("PhotoCanvas: Starting to load image:", imageUrl);
     const i = new Image();
     i.crossOrigin = "anonymous";
-    i.onload = () => setImg(i);
+    
+    const timeout = setTimeout(() => {
+      if (!i.complete) {
+        console.warn("PhotoCanvas: Image load timeout for:", imageUrl);
+        toast.error("Tiempo de carga de imagen excedido. Reintenta.");
+      }
+    }, 15000);
+
+    i.onload = () => {
+      clearTimeout(timeout);
+      console.log("PhotoCanvas: Image loaded successfully:", imageUrl, { width: i.width, height: i.height });
+      setImg(i);
+    };
+    
+    i.onerror = () => {
+      clearTimeout(timeout);
+      console.error("PhotoCanvas: Failed to load image:", imageUrl);
+      toast.error("Error al cargar la imagen. Verifica tu conexión.");
+    };
+    
     i.src = imageUrl;
+    
+    return () => clearTimeout(timeout);
   }, [imageUrl]);
 
   // Clean up renderer on unmount

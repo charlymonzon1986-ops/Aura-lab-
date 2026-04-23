@@ -1,7 +1,6 @@
 import React from "react";
 import EXIF from "exif-js";
 import { motion, AnimatePresence } from "motion/react";
-import { GoogleGenAI } from "@google/genai";
 import { 
   X,
   LayoutGrid, 
@@ -122,31 +121,7 @@ const fixImageUrlLocal = (url: string) => {
 };
 
 // Safe initialization of Gemini AI
-let aiInstance: GoogleGenAI | null = null;
 
-// Helper to get or initialize the AI instance
-const getAI = () => {
-  if (aiInstance) return aiInstance;
-  
-  let key: string | undefined = undefined;
-  
-  try {
-    // Try multiple sources for the API Key to ensure connectivity in different environments
-    key = (process.env as any).GEMINI_API_KEY || 
-          (window as any).GEMINI_API_KEY || 
-          (import.meta as any).env.VITE_GEMINI_API_KEY;
-  } catch (e) {
-    console.warn("Non-critical: Error looking up Gemini key sources:", e);
-  }
-
-  if (key && key !== "undefined" && key.trim() !== "") {
-    console.log("✅ Gemini AI initialized");
-    aiInstance = new GoogleGenAI({ apiKey: key });
-    return aiInstance;
-  }
-  
-  return null;
-};
 
 // Helper to safely parse AI JSON that might be wrapped in markdown
 const parseAIJSON = (text: string) => {
@@ -412,25 +387,17 @@ function AppContent() {
           const userDocRef = doc(db, "users", currentUser.uid);
           
           const userDoc = await getDoc(userDocRef);
-          const adminEmails = ['juanomonzon@gmail.com', 'ruth1094@gmail.com', 'charlymonzon.1986@gmail.com'];
-          const isTargetAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
-
           if (!userDoc.exists()) {
             const profile: UserProfile = {
               uid: currentUser.uid,
               email: currentUser.email || "",
               displayName: currentUser.displayName || "Usuario",
-              role: isTargetAdmin ? "admin" : "user",
-              plan: isTargetAdmin ? "studio" : "free",
+              role: "user", // Default, must be promoted via DB
+              plan: "free",
               storageUsed: 0,
               createdAt: new Date().toISOString()
             };
             await setDoc(userDocRef, profile);
-          } else if (isTargetAdmin) {
-            const data = userDoc.data() as UserProfile;
-            if (data.role !== 'admin' || data.plan !== 'studio') {
-              await updateDoc(userDocRef, { role: 'admin', plan: 'studio' });
-            }
           }
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, "users/" + (currentUser?.uid || "unknown"));
@@ -535,10 +502,14 @@ function AppContent() {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedPhotos = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      })) as Photo[];
+      const fetchedPhotos = snapshot.docs.map(doc => {
+        const data = doc.data() as any;
+        return {
+          ...data,
+          id: doc.id,
+          settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) }
+        } as Photo;
+      });
       setPhotos(fetchedPhotos);
       
       // Save to local DB for offline access
@@ -549,7 +520,11 @@ function AppContent() {
       // Fallback to local DB if offline or error
       getLocalPhotos().then(localPhotos => {
         if (localPhotos.length > 0) {
-          setPhotos(localPhotos);
+          const merged = localPhotos.map(p => ({
+            ...p,
+            settings: { ...DEFAULT_SETTINGS, ...p.settings }
+          })) as Photo[];
+          setPhotos(merged);
           toast.info("Cargando fotos desde el caché local (Modo Offline)");
         }
       });
@@ -1700,36 +1675,19 @@ function AppContent() {
       IMPORTANTE: Toda la respuesta de texto debe ser en ESPAÑOL.
       Responde ÚNICAMENTE con el JSON.`;
 
-      console.log("Sending request to Gemini...");
-      const ai = getAI();
-      if (!ai) {
-        throw new Error("La función de IA no está configurada (falta la clave API en el entorno)");
-      }
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: {
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: blob.type || "image/jpeg",
-                data: imageData
-              }
-            }
-          ]
-        },
-        config: {
-          responseMimeType: "application/json"
-        }
+      console.log("Sending request to Gemini via Server Proxy...");
+      const response = await axios.post('/api/ai/analyze-photo', {
+        prompt,
+        imageData,
+        mimeType: blob.type || "image/jpeg"
       });
 
-      if (!response || !response.text) {
+      if (!response.data || !response.data.result) {
         throw new Error("No se recibió respuesta válida de la IA");
       }
 
-      const responseText = response.text;
-      console.log("Gemini response received:", responseText);
+      const responseText = response.data.result;
+      console.log("Gemini response received from server:", responseText);
       const analysis = parseAIJSON(responseText);
 
       setPhotos(prev => prev.map(p => p.id === id ? { 
