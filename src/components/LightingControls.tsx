@@ -122,7 +122,7 @@ export const LightingControls = React.memo(function LightingControls({
   const handleSliderChange = React.useCallback((key: keyof LightingSettings, val: number) => {
     const next = { ...localRef.current, [key]: val };
     localRef.current = next;
-    setLocalSettings(next); // re-render solo de LightingControls, no de App
+    setLocalSettings(next);
     if (onPreviewChange) onPreviewChange(next);
   }, [onPreviewChange]);
 
@@ -130,8 +130,10 @@ export const LightingControls = React.memo(function LightingControls({
   const handleSliderCommit = React.useCallback((key: keyof LightingSettings, val: number) => {
     const next = { ...localRef.current, [key]: val };
     localRef.current = next;
+    setLocalSettings(next); // IMPORTANTE: Sincronizar local tmb
+    if (onPreviewChange) onPreviewChange(next); // IMPORTANTE: Reflejar en preview de App
     onChange(next);
-  }, [onChange]);
+  }, [onChange, onPreviewChange]);
 
   const handleColorBalanceChange = React.useCallback((
     key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string

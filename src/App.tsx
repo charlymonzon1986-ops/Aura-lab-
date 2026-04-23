@@ -131,8 +131,10 @@ const getAI = () => {
   let key: string | undefined = undefined;
   
   try {
-    // Standard process.env (platform guideline)
-    key = (process.env as any).GEMINI_API_KEY;
+    // Try multiple sources for the API Key to ensure connectivity in different environments
+    key = (process.env as any).GEMINI_API_KEY || 
+          (window as any).GEMINI_API_KEY || 
+          (import.meta as any).env.VITE_GEMINI_API_KEY;
   } catch (e) {
     console.warn("Non-critical: Error looking up Gemini key sources:", e);
   }
@@ -410,17 +412,25 @@ function AppContent() {
           const userDocRef = doc(db, "users", currentUser.uid);
           
           const userDoc = await getDoc(userDocRef);
+          const adminEmails = ['juanomonzon@gmail.com', 'ruth1094@gmail.com', 'charlymonzon.1986@gmail.com'];
+          const isTargetAdmin = adminEmails.includes(currentUser.email?.toLowerCase() || "");
+
           if (!userDoc.exists()) {
             const profile: UserProfile = {
               uid: currentUser.uid,
               email: currentUser.email || "",
               displayName: currentUser.displayName || "Usuario",
-              role: "user",
-              plan: "free",
+              role: isTargetAdmin ? "admin" : "user",
+              plan: isTargetAdmin ? "studio" : "free",
               storageUsed: 0,
               createdAt: new Date().toISOString()
             };
             await setDoc(userDocRef, profile);
+          } else if (isTargetAdmin) {
+            const data = userDoc.data() as UserProfile;
+            if (data.role !== 'admin' || data.plan !== 'studio') {
+              await updateDoc(userDocRef, { role: 'admin', plan: 'studio' });
+            }
           }
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, "users/" + (currentUser?.uid || "unknown"));
@@ -1472,36 +1482,34 @@ function AppContent() {
       - whites (85-100, 100 es neutro)
       - blacks (95-105, 100 es neutro)`;
 
-      console.log("Sending request to Gemini for Smart Enhance...");
-      const ai = getAI();
-      if (!ai) {
-        throw new Error("La función de IA no está configurada (falta la clave API en el entorno)");
-      }
+      console.log("Sending request to server AI proxy for Smart Enhance...");
+      const idToken = await currentUser.getIdToken();
 
-      const response = await ai.models.generateContent({
-        model: "gemini-flash-latest",
-        contents: {
-          parts: [
-            { text: fullPrompt },
-            {
-              inlineData: {
-                mimeType: detectedMimeType || "image/jpeg",
-                data: base64Data
-              }
-            }
-          ]
+      const apiResponse = await fetch("/api/ai/smart-enhance", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken}`
         },
-        config: {
-          responseMimeType: "application/json"
-        }
+        body: JSON.stringify({
+          prompt: fullPrompt,
+          imageData: base64Data,
+          mimeType: detectedMimeType || "image/jpeg"
+        })
       });
 
-      if (!response || !response.text) {
+      if (!apiResponse.ok) {
+        const errData = await apiResponse.json();
+        throw new Error(errData.error || "Error en el servidor de IA");
+      }
+
+      const { result: responseText } = await apiResponse.json();
+      
+      if (!responseText) {
         throw new Error("No se recibió respuesta válida de la IA");
       }
 
-      const responseText = response.text;
-      console.log("Gemini response received for Smart Enhance:", responseText);
+      console.log("Gemini response received via proxy:", responseText);
       const aiData = parseAIJSON(responseText);
       
       // Normalize AI response to match our internal ranges

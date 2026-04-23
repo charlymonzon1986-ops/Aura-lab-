@@ -88,7 +88,7 @@ export class WebGLRenderer {
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.positionBuffer);
     this.gl.vertexAttribPointer(posLoc, 2, this.gl.FLOAT, false, 0, 0);
 
-    // Calculate texture coordinates based on crop and flips
+    // Dynamic texture coordinates (Cropping & Rotation)
     const left = settings.cropLeft / 100;
     const right = 1.0 - settings.cropRight / 100;
     const top = settings.cropTop / 100;
@@ -99,80 +99,41 @@ export class WebGLRenderer {
     let y1 = settings.flipY ? bottom : top;
     let y2 = settings.flipY ? top : bottom;
 
-    // Handle Rotation (0, 90, 180, 270)
-    // This is a simplified rotation for 90-degree increments
     const rot = (settings.rotation % 360 + 360) % 360;
-    let texCoords = new Float32Array([
-      x1, y2, x2, y2, x1, y1,
-      x1, y1, x2, y2, x2, y1,
-    ]);
+    let coords = [x1, y2, x2, y2, x1, y1, x1, y1, x2, y2, x2, y1];
 
-    if (rot === 90) {
-      texCoords = new Float32Array([
-        x1, y1, x1, y2, x2, y1,
-        x2, y1, x1, y2, x2, y2,
-      ]);
-    } else if (rot === 180) {
-      texCoords = new Float32Array([
-        x2, y1, x1, y1, x2, y2,
-        x2, y2, x1, y1, x1, y2,
-      ]);
-    } else if (rot === 270) {
-      texCoords = new Float32Array([
-        x2, y2, x2, y1, x1, y2,
-        x1, y2, x2, y1, x1, y1,
-      ]);
-    }
+    if (rot === 90) coords = [x1, y1, x1, y2, x2, y1, x2, y1, x1, y2, x2, y2];
+    else if (rot === 180) coords = [x2, y1, x1, y1, x2, y2, x2, y2, x1, y1, x1, y2];
+    else if (rot === 270) coords = [x2, y2, x2, y1, x1, y2, x1, y2, x2, y1, x1, y1];
 
     const texLoc = this.gl.getAttribLocation(this.program, "a_texCoord");
     this.gl.enableVertexAttribArray(texLoc);
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.texCoordBuffer);
-    this.gl.bufferData(this.gl.ARRAY_BUFFER, texCoords, this.gl.DYNAMIC_DRAW);
+    this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(coords), this.gl.DYNAMIC_DRAW);
     this.gl.vertexAttribPointer(texLoc, 2, this.gl.FLOAT, false, 0, 0);
 
-    // Uniforms with safety defaults
+    // -- UNIFORMS (Professional Mapping) --
     const s = settings;
     this.setUniform("u_exposure", s.exposure ?? 0);
-    this.setUniform("u_brightness", ((s.brightness ?? 100) - 100) / 100);
     this.setUniform("u_contrast", (s.contrast ?? 100) / 100);
+    this.setUniform("u_temp", (s.warmth ?? 0) / 100);
+    this.setUniform("u_tint", (s.tint ?? 0) / 100);
+    this.setUniform("u_highlights", ((s.highlights ?? 100) - 100) / 100);
+    this.setUniform("u_shadows", ((s.shadows ?? 100) - 100) / 100);
+    this.setUniform("u_whites", ((s.whites ?? 100) - 100) / 100);
+    this.setUniform("u_blacks", ((s.blacks ?? 100) - 100) / 100);
     this.setUniform("u_saturation", (s.saturation ?? 100) / 100);
     this.setUniform("u_vibrance", ((s.vibrance ?? 100) - 100) / 100);
-    this.setUniform("u_warmth", (s.warmth ?? 0) / 200);
-    this.setUniform("u_tint", (s.tint ?? 0) / 200);
-    this.setUniform("u_highlights", ((s.highlights ?? 100) - 100) / 200);
-    this.setUniform("u_shadows", ((s.shadows ?? 100) - 100) / 200);
-    this.setUniform("u_whites", ((s.whites ?? 100) - 100) / 200);
-    this.setUniform("u_blacks", ((s.blacks ?? 100) - 100) / 200);
+    this.setUniform("u_clarity", (s.clarity ?? 0) / 100);
+    this.setUniform("u_dehaze", (s.dehaze ?? 0) / 100);
     this.setUniform("u_vignette", (s.vignette ?? 0) / 100);
     this.setUniform("u_grain", (s.grain ?? 0) / 100);
-    this.setUniform("u_clarity", (s.clarity ?? 0) / 100);
-    this.setUniform("u_texture", (s.texture ?? 0) / 100);
-    this.setUniform("u_dehaze", (s.dehaze ?? 0) / 100);
-    this.setUniform("u_sepia", (s.sepia ?? 0) / 100);
-    this.setUniform("u_sharpening", (s.sharpening ?? 0) / 100);
-    this.setUniform("u_blur", (s.blur ?? 0) / 10);
-    this.setUniform("u_distortion", (s.distortion ?? 0) / 100);
-    this.setUniform("u_focus", (s.focus ?? 0) / 100);
-    this.setUniform("u_noiseReduction", (s.noiseReduction ?? 0) / 100);
-    this.setUniform("u_lutIntensity", (s.lutIntensity ?? 100) / 100);
-    
-    // LUT Mapping
-    const lutMap: Record<string, number> = {
-      'cinematic': 1,
-      'vintage': 2,
-      'noir': 3,
-      'teal-orange': 4,
-      'warm-gold': 5
-    };
-    this.setUniform("u_lut", s.lut ? (lutMap[s.lut] || 0) : 0);
+    this.setUniform("u_time", performance.now() / 1000);
 
-    this.setUniform("u_time", Math.random());
-    this.setUniformVec2("u_resolution", [width, height]);
-
-    // Color Balance Tints
+    // Color Grading (Split Toning)
     this.setUniformVec3("u_shadowTint", this.hexToRgb(s.shadowTint));
-    this.setUniformVec3("u_midtoneTint", this.hexToRgb(s.midtoneTint));
     this.setUniformVec3("u_highlightTint", this.hexToRgb(s.highlightTint));
+    this.setUniform("u_balance", (s.balance ?? 0) / 100);
 
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
   }

@@ -172,7 +172,9 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
     const updateSize = async () => {
       if (!img || isDestroyed) return;
       
-      const { width: containerWidth, height: containerHeight } = container.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const containerWidth = containerRect.width;
+      const containerHeight = containerRect.height;
       if (containerWidth === 0 || containerHeight === 0) return;
 
       const rot = Math.abs(settings.rotation % 360);
@@ -194,13 +196,22 @@ export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>
       }
 
       const dpr = window.devicePixelRatio || 1;
-      canvas.style.width = `${drawWidth}px`;
-      canvas.style.height = `${drawHeight}px`;
-      
-      const w = drawWidth * dpr;
-      const h = drawHeight * dpr;
-      canvas.width = w;
-      canvas.height = h;
+      const w = Math.floor(drawWidth * dpr);
+      const h = Math.floor(drawHeight * dpr);
+
+      // CRITICAL FIX: Only update width/height if they actually changed to preserve context
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.style.width = `${drawWidth}px`;
+        canvas.style.height = `${drawHeight}px`;
+        canvas.width = w;
+        canvas.height = h;
+        
+        // Context is reset when width/height change, recreate renderer
+        if (rendererRef.current) {
+          rendererRef.current.destroy();
+          rendererRef.current = null;
+        }
+      }
 
       try {
         if (!rendererRef.current) {

@@ -10,6 +10,7 @@ import cors from "cors";
 import multer from "multer";
 import sharp from "sharp";
 import axios from "axios";
+import { GoogleGenAI } from "@google/genai";
 
 // Optimize sharp for Cloud Run (reduce memory usage)
 sharp.cache(false);
@@ -40,6 +41,9 @@ try {
   _dirname = process.cwd();
 }
 const APP_DIR = _dirname.endsWith('dist-server') ? path.join(_dirname, '..') : _dirname;
+
+// Initialize Gemini AI
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI(process.env.GEMINI_API_KEY) : null;
 
 async function startServer() {
   const app = express();
@@ -300,8 +304,11 @@ async function startServer() {
 
   app.get("/api/admin/config-check", authenticate, (req: any, res) => {
     // Only admins
-    const admins = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
-    if (!admins.includes(req.user.email)) {
+    const envAdmins = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || process.env.ADMIN_EMAIL || '').split(',').map(e => e.trim().toLowerCase());
+    const hardcodedAdmins = ['juanomonzon@gmail.com', 'ruth1094@gmail.com', 'charlymonzon.1986@gmail.com'];
+    const admins = [...new Set([...envAdmins, ...hardcodedAdmins])].filter(Boolean);
+
+    if (!admins.includes(req.user.email?.toLowerCase())) {
       return res.status(403).json({ error: "Forbidden" });
     }
     res.json({ 
@@ -528,6 +535,43 @@ async function startServer() {
       await fsDb.collection("users").doc(userId).update({ storageUsed: admin.firestore.FieldValue.increment(file.size), lastUploadAt: new Date().toISOString() });
       res.json({ url, thumbnailUrl: thumb });
     } catch { res.status(500).send("Upload Error"); }
+  });
+
+  // AI Proxy Route
+  app.post("/api/ai/smart-enhance", authenticate, async (req: any, res) => {
+    try {
+      if (!genAI) {
+        return res.status(500).json({ error: "Gemini API key not configured on server" });
+      }
+
+      const { prompt, imageData, mimeType } = req.body;
+      if (!imageData) {
+        return res.status(400).json({ error: "No image data provided" });
+      }
+
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      
+      const result = await model.generateContent([
+        prompt,
+        {
+          inlineData: {
+            data: imageData,
+            mimeType: mimeType || "image/jpeg"
+          }
+        }
+      ]);
+
+      const content = await result.response;
+      let text = content.text();
+      
+      // Clean up markdown code blocks if AI returns them
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+
+      res.json({ result: text });
+    } catch (error: any) {
+      console.error("Gemini AI Error:", error);
+      res.status(500).json({ error: error.message || "Error processing AI request" });
+    }
   });
 
   // 4. Vite / Static Serving
