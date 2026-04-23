@@ -21,9 +21,12 @@ if (process.env.K_SERVICE) {
 import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
 import { Resend } from 'resend';
-import B2 from 'backblaze-b2';
+import B2Package from 'backblaze-b2';
+// Handle ESM/CJS import differences
+const B2 = (B2Package as any).default || B2Package;
 import archiver from 'archiver';
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import os from 'os';
 
 // 1. Core configuration
@@ -43,7 +46,7 @@ try {
 const APP_DIR = _dirname.endsWith('dist-server') ? path.join(_dirname, '..') : _dirname;
 
 // Initialize Gemini AI
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI(process.env.GEMINI_API_KEY) : null;
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 async function startServer() {
   const app = express();
@@ -130,7 +133,7 @@ async function startServer() {
         admin.initializeApp({ projectId: fbConfig.projectId });
       }
     }
-    fsDb = admin.firestore(fbConfig.firestoreDatabaseId);
+    fsDb = getFirestore(admin.app(), fbConfig.firestoreDatabaseId);
     console.log("✅ Firebase initialized");
   } catch (err) {
     console.error("⚠️ Firebase Fallback:", err);
@@ -147,9 +150,8 @@ async function startServer() {
 
   async function authorizeB2() {
     if (b2Authorized) return;
-    if (process.env.B2_KEY_ID === 'dummy' || !process.env.B2_KEY_ID) {
-      console.warn("⚠️ B2 using dummy keys, authorization skipped.");
-      return;
+    if (!process.env.B2_KEY_ID || process.env.B2_KEY_ID === 'dummy' || !process.env.B2_APPLICATION_KEY || process.env.B2_APPLICATION_KEY === 'dummy') {
+      throw new Error("Backblaze B2 credentials (B2_KEY_ID and B2_APPLICATION_KEY) are missing or set to 'dummy'. Please configure them in the settings.");
     }
     try {
       await b2.authorize();
@@ -173,8 +175,13 @@ async function startServer() {
     try {
       await authorizeB2();
       const bucketName = process.env.B2_BUCKET_NAME;
-      if (!bucketName) throw new Error("B2_BUCKET_NAME missing");
+      if (!bucketName) throw new Error("B2_BUCKET_NAME environment variable is missing.");
+      
       const bucketResponse = await b2.getBucket({ bucketName });
+      if (!bucketResponse.data.buckets || bucketResponse.data.buckets.length === 0) {
+        throw new Error(`B2 Bucket "${bucketName}" not found. Verify your B2 configuration.`);
+      }
+      
       const bucketId = bucketResponse.data.buckets[0].bucketId;
       const uploadUrlResponse = await b2.getUploadUrl({ bucketId });
       const { uploadUrl, authorizationToken } = uploadUrlResponse.data;
@@ -403,7 +410,7 @@ async function startServer() {
         if (ph.userId !== req.user.uid) continue;
 
         let b: Buffer;
-        if (ph.url.startsWith('/api/b2-proxy/')) {
+        if (ph.url && typeof ph.url === 'string' && ph.url.startsWith('/api/b2-proxy/')) {
           b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
         } else if (ph.url.includes('firebasestorage.googleapis.com')) {
           // Allow Firebase Storage
@@ -495,7 +502,7 @@ async function startServer() {
           if (photoDoc.exists) {
             const ph = photoDoc.data();
             let b: Buffer;
-            if (ph.url.startsWith('/api/b2-proxy/')) b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
+            if (ph.url && typeof ph.url === 'string' && ph.url.startsWith('/api/b2-proxy/')) b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
             else b = (await axios.get(ph.url, { responseType: 'arraybuffer' })).data;
             arc.append(b, { name: `${ph.title || 'photo'}-${pid.slice(0, 5)}.jpg` });
           }
@@ -504,6 +511,42 @@ async function startServer() {
       arc.finalize();
     } catch (err) {
       res.status(500).send("Error generating download");
+    }
+  });
+
+  // Storage Debug Route
+  app.get("/api/storage-test", authenticate, async (req: any, res) => {
+    try {
+      if (!process.env.B2_KEY_ID || process.env.B2_KEY_ID === 'dummy') {
+        return res.json({ status: "error", message: "B2_KEY_ID missing or dummy" });
+      }
+      
+      console.log("Testing B2 Authorization...");
+      const testB2 = new B2({
+        applicationKeyId: process.env.B2_KEY_ID,
+        applicationKey: process.env.B2_APPLICATION_KEY
+      });
+      
+      const authResponse = await testB2.authorize();
+      console.log("B2 Auth Success:", authResponse.data.allowed.bucketName);
+      
+      const bucketName = process.env.B2_BUCKET_NAME;
+      const bucketResponse = await testB2.getBucket({ bucketName });
+      
+      res.json({ 
+        status: "ok", 
+        message: "B2 connection successful",
+        bucket: bucketName,
+        apiUrl: authResponse.data.apiUrl,
+        downloadUrl: authResponse.data.downloadUrl
+      });
+    } catch (err: any) {
+      console.error("Storage Test Failed:", err);
+      res.status(500).json({ 
+        status: "error", 
+        message: err.message,
+        details: err.response?.data || "No extra details"
+      });
     }
   });
 
@@ -518,7 +561,10 @@ async function startServer() {
       if (url) await deleteFromB2(url);
       if (thumbnailUrl && thumbnailUrl !== url) await deleteFromB2(thumbnailUrl);
       res.json({ success: true });
-    } catch { res.status(500).send("Error"); }
+    } catch (err: any) { 
+      console.error("Delete Route Error:", err);
+      res.status(500).json({ error: err.message || "Delete Error" }); 
+    }
   });
 
   app.post("/api/upload", authenticate, upload.single("file"), async (req: any, res) => {
@@ -534,7 +580,11 @@ async function startServer() {
       if (tb) thumb = await uploadToB2(tb, `thumb-${ts}-${path.parse(name).name}.jpg`, 'image/jpeg');
       await fsDb.collection("users").doc(userId).update({ storageUsed: admin.firestore.FieldValue.increment(file.size), lastUploadAt: new Date().toISOString() });
       res.json({ url, thumbnailUrl: thumb });
-    } catch { res.status(500).send("Upload Error"); }
+    } catch (err: any) { 
+      console.error("Upload Route Error:", err);
+      const message = err.message || "Upload Error";
+      res.status(500).json({ error: message }); 
+    }
   });
 
   // AI Proxy Route
@@ -549,20 +599,23 @@ async function startServer() {
         return res.status(400).json({ error: "No image data provided" });
       }
 
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      
-      const result = await model.generateContent([
-        prompt,
-        {
-          inlineData: {
-            data: imageData,
-            mimeType: mimeType || "image/jpeg"
-          }
-        }
-      ]);
+      const response = await genAI.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                data: imageData,
+                mimeType: mimeType || "image/jpeg"
+              }
+            }
+          ]
+        }]
+      });
 
-      const content = await result.response;
-      let text = content.text();
+      let text = response.text || "";
       
       // Clean up markdown code blocks if AI returns them
       text = text.replace(/```json/g, '').replace(/```/g, '').trim();

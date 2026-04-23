@@ -10,7 +10,7 @@ self.onmessage = async (e: MessageEvent) => {
     case 'GENERATE_PROXY':
       const { bitmap, maxDim } = payload;
       const proxy = await generateProxy(bitmap, maxDim);
-      self.postMessage({ type: 'PROXY_READY', payload: proxy }, [proxy]);
+      (self as any).postMessage({ type: 'PROXY_READY', payload: proxy }, [proxy]);
       break;
     
     default:

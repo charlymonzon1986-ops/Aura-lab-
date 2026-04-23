@@ -346,8 +346,8 @@ function AppContent() {
   // Listen for hash changes for Public Gallery
   React.useEffect(() => {
     const handleHash = () => {
-      const hash = window.location.hash;
-      if (hash.startsWith('#gallery=')) {
+      const hash = window.location.hash || "";
+      if (hash && hash.startsWith('#gallery=')) {
         setPublicGallerySlug(hash.replace('#gallery=', ''));
       } else {
         setPublicGallerySlug(null);
@@ -705,7 +705,7 @@ function AppContent() {
 
     console.log("Intentando guardar en Firestore con datos:", {
       ...photoData,
-      url: url.startsWith('data:') ? `DataURL(${url.length} chars)` : url
+      url: (url && url.startsWith('data:')) ? `DataURL(${url.length} chars)` : url
     });
 
     try {
@@ -893,7 +893,9 @@ function AppContent() {
 
     } catch (error: any) {
       console.error("Error en la subida a B2:", error);
-      toast.error("Error al subir la foto. Por favor, intenta de nuevo.");
+      const serverError = error.response?.data?.error;
+      const errorMsg = serverError ? `Error: ${serverError}` : "Error al subir la foto. Por favor, intenta de nuevo.";
+      toast.error(errorMsg);
       setIsUploading(false);
       setUploadProgress(0);
     }
@@ -912,7 +914,7 @@ function AppContent() {
       const q = searchQuery.toLowerCase();
       if (q === ':pick') result = result.filter(p => p.flag === 'pick');
       else if (q === ':reject') result = result.filter(p => p.flag === 'reject');
-      else if (q.startsWith(':')) {
+      else if (q && q.startsWith(':')) {
         const color = q.substring(1);
         result = result.filter(p => p.colorTag === color);
       } else {
@@ -1483,7 +1485,7 @@ function AppContent() {
       - blacks (95-105, 100 es neutro)`;
 
       console.log("Sending request to server AI proxy for Smart Enhance...");
-      const idToken = await currentUser.getIdToken();
+      const idToken = await (auth.currentUser?.getIdToken() || Promise.resolve(""));
 
       const apiResponse = await fetch("/api/ai/smart-enhance", {
         method: "POST",
@@ -1631,6 +1633,26 @@ function AppContent() {
 
   const clearSelection = () => {
     setSelectedPhotoIds([]);
+  };
+
+  const testStorage = async () => {
+    const toastId = toast.loading("Verificando conexión con Backblaze B2...");
+    try {
+      const response = await axios.get("/api/storage-test");
+      if (response.data.status === "ok") {
+        toast.success(`Conexión exitosa: Bucket "${response.data.bucket}" accesible.`, { id: toastId });
+      } else {
+        toast.error(`Error: ${response.data.message}`, { id: toastId, description: response.data.details ? JSON.stringify(response.data.details) : undefined });
+      }
+    } catch (error: any) {
+      console.error("Storage test error:", error);
+      const msg = error.response?.data?.message || "Error de conexión con el servidor";
+      const details = error.response?.data?.details;
+      toast.error(`Fallo en la prueba: ${msg}`, { 
+        id: toastId,
+        description: details ? JSON.stringify(details) : "Consulta los logs del servidor para más detalles."
+      });
+    }
   };
 
   const togglePhotoSelection = (id: string) => {
@@ -3503,6 +3525,21 @@ function AppContent() {
                 <p className="text-[10px] text-zinc-500 font-bold uppercase">Archivos RAW</p>
                 <p className="text-lg font-bold">{photos.filter(p => /\.(arw|cr2|nef|dng|orf|raf)$/i.test(p.url)).length}</p>
               </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 flex flex-col gap-4">
+              <div className="space-y-1">
+                <p className="text-[10px] text-zinc-500 font-bold uppercase">Estado de Backblaze B2</p>
+                <p className="text-xs text-zinc-300">Verifica la configuración de tus credenciales.</p>
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                className="w-full text-[10px] font-bold uppercase tracking-wider border-zinc-800 hover:bg-zinc-800"
+                onClick={testStorage}
+              >
+                Probar Conexión B2
+              </Button>
             </div>
 
             <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 flex items-start gap-3">

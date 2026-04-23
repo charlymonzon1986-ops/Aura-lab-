@@ -141,6 +141,7 @@ export interface LightingSettings {
   shadowTint: string; // hex or hsl
   midtoneTint: string;
   highlightTint: string;
+  balance?: number;
 }
 
 export const DEFAULT_SETTINGS: LightingSettings = {
@@ -178,4 +179,5 @@ export const DEFAULT_SETTINGS: LightingSettings = {
   shadowTint: "transparent",
   midtoneTint: "transparent",
   highlightTint: "transparent",
+  balance: 0,
 };
