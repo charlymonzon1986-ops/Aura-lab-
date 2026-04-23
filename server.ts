@@ -10,8 +10,6 @@ import cors from "cors";
 import multer from "multer";
 import sharp from "sharp";
 import axios from "axios";
-import { GoogleGenAI } from "@google/genai";
-
 // Optimize sharp for Cloud Run (reduce memory usage)
 sharp.cache(false);
 if (process.env.K_SERVICE) {
@@ -45,8 +43,39 @@ try {
 }
 const APP_DIR = _dirname.endsWith('dist-server') ? path.join(_dirname, '..') : _dirname;
 
-// Initialize Gemini AI
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+const DEFAULT_SETTINGS = {
+  exposure: 0,
+  brightness: 100,
+  contrast: 100,
+  saturation: 100,
+  vibrance: 100,
+  warmth: 0,
+  tint: 0,
+  highlights: 100,
+  shadows: 100,
+  whites: 100,
+  blacks: 100,
+  clarity: 0,
+  dehaze: 0,
+  sharpening: 0,
+  noiseReduction: 0,
+  vignette: 0,
+  grain: 0,
+  sepia: 0,
+  blur: 0,
+  rotation: 0,
+  flipX: false,
+  flipY: false,
+  cropLeft: 0,
+  cropTop: 0,
+  cropRight: 0,
+  cropBottom: 0,
+  shadowTint: "transparent",
+  midtoneTint: "transparent",
+  highlightTint: "transparent",
+  balance: 0,
+  lut: null
+};
 
 async function startServer() {
   const app = express();
@@ -221,10 +250,14 @@ async function startServer() {
       if (!fileName) return;
 
       const bucketResponse = await b2.getBucket({ bucketName });
+      if (!bucketResponse.data.buckets || bucketResponse.data.buckets.length === 0) return;
       const bucketId = bucketResponse.data.buckets[0].bucketId;
       const fileInfo = await b2.listFileNames({ bucketId, startFileName: fileName, maxFileCount: 1, prefix: fileName });
-      const file = fileInfo.data.files.find((f: any) => f.fileName === fileName);
-      if (file) await b2.deleteFileVersion({ fileId: file.fileId, fileName: file.fileName });
+      
+      if (fileInfo.data && fileInfo.data.files && fileInfo.data.files.length > 0) {
+        const file = fileInfo.data.files.find((f: any) => f.fileName === fileName);
+        if (file) await b2.deleteFileVersion({ fileId: file.fileId, fileName: file.fileName });
+      }
     } catch (err) {
       console.error("B2 Delete Error:", err);
     }
@@ -407,10 +440,10 @@ async function startServer() {
     arc.pipe(res);
     for (const ph of photos) {
       try {
-        // Ownership check
-        if (ph.userId !== req.user.uid) continue;
+        // Ownership check (Skip silently to allow rest of zip to continue)
+        if (!ph || ph.userId !== req.user.uid) continue;
 
-        let b: Buffer;
+        let b: Buffer | null = null;
         if (ph.url && typeof ph.url === 'string' && ph.url.startsWith('/api/b2-proxy/')) {
           b = await downloadFromB2(decodeURIComponent(ph.url.split('/api/b2-proxy/')[1]));
         } else if (ph.url.includes('firebasestorage.googleapis.com')) {
@@ -421,7 +454,9 @@ async function startServer() {
           console.warn(`Blocked batch export from unauthorized source: ${ph.url}`);
           continue;
         }
-        const s = ph.settings;
+
+        if (!b) continue;
+        const s = ph.settings || DEFAULT_SETTINGS;
         
         // Comprehensive adjustment pipeline using sharp
         let pipe = sharp(b);
@@ -596,86 +631,6 @@ async function startServer() {
       console.error("Upload Route Error:", err);
       const message = err.message || "Upload Error";
       res.status(500).json({ error: message }); 
-    }
-  });
-
-  // AI Proxy Routes
-  app.post("/api/ai/smart-enhance", authenticate, async (req: any, res) => {
-    try {
-      if (!genAI) {
-        return res.status(500).json({ error: "Gemini API key not configured on server" });
-      }
-
-      const { prompt, imageData, mimeType } = req.body;
-      if (!imageData) {
-        return res.status(400).json({ error: "No image data provided" });
-      }
-
-      const response = await genAI.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  data: imageData,
-                  mimeType: mimeType || "image/jpeg"
-                }
-              }
-            ]
-          }
-        ]
-      });
-
-      let text = response.text || "";
-      
-      // Clean up markdown code blocks if AI returns them
-      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-
-      res.json({ result: text });
-    } catch (error: any) {
-      console.error("Gemini AI Error:", error);
-      res.status(500).json({ error: error.message || "Error processing AI request" });
-    }
-  });
-
-  app.post("/api/ai/analyze-photo", authenticate, async (req: any, res) => {
-    try {
-      if (!genAI) {
-        return res.status(500).json({ error: "Gemini API key not configured on server" });
-      }
-
-      const { prompt, imageData, mimeType } = req.body;
-      if (!imageData) {
-        return res.status(400).json({ error: "No image data provided" });
-      }
-
-      const response = await genAI.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  data: imageData,
-                  mimeType: mimeType || "image/jpeg"
-                }
-              }
-            ]
-          }
-        ],
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
-
-      const text = response.text || "";
-      res.json({ result: text });
-    } catch (error: any) {
-      console.error("Gemini Analyze Error:", error);
-      res.status(500).json({ error: error.message || "Error analyzing photo" });
     }
   });
 

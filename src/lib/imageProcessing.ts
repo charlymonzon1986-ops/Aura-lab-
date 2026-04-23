@@ -95,7 +95,7 @@ export function getFilterString(settings: LightingSettings): string {
 
 export const fixImageUrl = (url: string) => {
   if (!url || typeof url !== 'string') return "";
-  if (url.startsWith('/uploads/') || url.startsWith('blob:') || url.startsWith('data:')) return url;
+  if (url.startsWith('/uploads/') || url.startsWith('/api/') || url.startsWith('blob:') || url.startsWith('data:')) return url;
   
   // Google Drive Fix
   const driveMatch = url.match(/\/(?:file\/d\/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)/);

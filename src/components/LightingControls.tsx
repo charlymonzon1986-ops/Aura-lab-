@@ -141,6 +141,15 @@ export const LightingControls = React.memo(function LightingControls({
     const next = { ...localRef.current, [key]: value };
     localRef.current = next;
     setLocalSettings(next);
+    if (onPreviewChange) onPreviewChange(next);
+  }, [onPreviewChange]);
+
+  const handleColorBalanceCommit = React.useCallback((
+    key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string
+  ) => {
+    const next = { ...localRef.current, [key]: value };
+    localRef.current = next;
+    setLocalSettings(next);
     onChange(next);
   }, [onChange]);
 
@@ -329,6 +338,7 @@ export const LightingControls = React.memo(function LightingControls({
           <ColorBalance
             shadows={s.shadowTint} midtones={s.midtoneTint} highlights={s.highlightTint}
             onChange={handleColorBalanceChange}
+            onCommit={handleColorBalanceCommit}
           />
         </div>
         {isLocked('pro') && (

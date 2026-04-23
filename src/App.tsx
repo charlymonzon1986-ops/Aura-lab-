@@ -1,5 +1,6 @@
 import React from "react";
 import EXIF from "exif-js";
+import { analyzePhoto as analyzePhotoAI, smartEnhance as smartEnhanceAI } from "./services/geminiService";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   X,
@@ -299,8 +300,21 @@ function AppContent() {
   const [isDragging, setIsDragging] = React.useState(false);
   const [dragStart, setDragStart] = React.useState({ x: 0, y: 0 });
   const [activeTab, setActiveTab] = React.useState<'dashboard' | 'gallery' | 'editor' | 'clients' | 'admin'>('dashboard');
+  const [histogramPixels, setHistogramPixels] = React.useState<Uint8Array | undefined>();
+  const handleHistogramData = React.useCallback((pixels: Uint8Array) => {
+    setHistogramPixels(pixels);
+  }, []);
   const [allUsers, setAllUsers] = React.useState<UserProfile[]>([]);
   const [systemConfig, setSystemConfig] = React.useState<any>(null);
+
+  // Reset pan/zoom on photo selection change
+  React.useEffect(() => {
+    if (selectedPhotoId) {
+      setPan({ x: 0, y: 0 });
+      setZoom(0.8);
+    }
+  }, [selectedPhotoId]);
+
   const [showControls, setShowControls] = React.useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
   const [isComparing, setIsComparing] = React.useState(false);
@@ -387,17 +401,31 @@ function AppContent() {
           const userDocRef = doc(db, "users", currentUser.uid);
           
           const userDoc = await getDoc(userDocRef);
+          
+          const ADMIN_LIST = [
+            'charlymonzon.1986@gmail.com',
+            'juanomonzon@gmail.com',
+            'ruth1094@gmail.com'
+          ];
+          const isAdminEmail = currentUser.email && ADMIN_LIST.includes(currentUser.email.toLowerCase());
+
           if (!userDoc.exists()) {
             const profile: UserProfile = {
               uid: currentUser.uid,
               email: currentUser.email || "",
               displayName: currentUser.displayName || "Usuario",
-              role: "user", // Default, must be promoted via DB
-              plan: "free",
+              role: isAdminEmail ? "admin" : "user",
+              plan: isAdminEmail ? "pro" : "free",
               storageUsed: 0,
               createdAt: new Date().toISOString()
             };
             await setDoc(userDocRef, profile);
+          } else {
+            const data = userDoc.data() as UserProfile;
+            // Auto-promote existing users if they are on the list but not admins yet
+            if (isAdminEmail && data.role !== 'admin') {
+              await updateDoc(userDocRef, { role: 'admin', plan: 'pro' });
+            }
           }
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, "users/" + (currentUser?.uid || "unknown"));
@@ -923,7 +951,14 @@ function AppContent() {
       const photo = prev.find(p => p.id === id);
       if (!photo) return prev;
       
-      const newSettings = { ...photo.settings, ...updates };
+      const s = { ...photo.settings, ...updates };
+      // Clamp values to safe professional ranges
+      if (s.exposure !== undefined) s.exposure = Math.min(Math.max(s.exposure, -5), 5);
+      if (s.contrast !== undefined) s.contrast = Math.min(Math.max(s.contrast, 0), 200);
+      if (s.brightness !== undefined) s.brightness = Math.min(Math.max(s.brightness, 0), 200);
+      if (s.saturation !== undefined) s.saturation = Math.min(Math.max(s.saturation, 0), 200);
+
+      const newSettings = s;
       
       // Update history
       setHistory(hPrev => {
@@ -1052,6 +1087,12 @@ function AppContent() {
         }
       }
       
+      // Navigation arrows (only if in editor or no input is focused)
+      if (activeTab === 'editor' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '')) {
+        if (e.key === 'ArrowRight') navigatePhoto('next');
+        if (e.key === 'ArrowLeft') navigatePhoto('prev');
+      }
+
       // Shortcut to toggle sidebar (Alt + S)
       if (e.altKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
@@ -1060,7 +1101,7 @@ function AppContent() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedPhotoId, selectedPhotoIds]);
+  }, [selectedPhotoId, selectedPhotoIds, activeTab, filteredPhotos]);
 
   const deletePhoto = async (id: string) => {
     if (!user || !userProfile) {
@@ -1287,6 +1328,7 @@ function AppContent() {
       return;
     }
 
+    setPreviewSettings(null); // Borrar preview para forzar actualización de controles
     updatePhotoSettings(selectedPhoto.id, preset.settings);
     toast.success(`Preset "${preset.name}" aplicado`);
   };
@@ -1323,6 +1365,7 @@ function AppContent() {
   };
 
   const resetSettings = React.useCallback((id: string) => {
+    setPreviewSettings(null); // Crucial para que los controles se enteren
     updatePhotoSettings(id, { ...DEFAULT_SETTINGS });
   }, [updatePhotoSettings]);
 
@@ -1459,34 +1502,14 @@ function AppContent() {
       - whites (85-100, 100 es neutro)
       - blacks (95-105, 100 es neutro)`;
 
-      console.log("Sending request to server AI proxy for Smart Enhance...");
-      const idToken = await (auth.currentUser?.getIdToken() || Promise.resolve(""));
-
-      const apiResponse = await fetch("/api/ai/smart-enhance", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken}`
-        },
-        body: JSON.stringify({
-          prompt: fullPrompt,
-          imageData: base64Data,
-          mimeType: detectedMimeType || "image/jpeg"
-        })
-      });
-
-      if (!apiResponse.ok) {
-        const errData = await apiResponse.json();
-        throw new Error(errData.error || "Error en el servidor de IA");
-      }
-
-      const { result: responseText } = await apiResponse.json();
+      console.log("Calling Gemini via Frontend SDK for Smart Enhance...");
+      const responseText = await smartEnhanceAI(base64Data, detectedMimeType || "image/jpeg", fullPrompt);
       
       if (!responseText) {
         throw new Error("No se recibió respuesta válida de la IA");
       }
 
-      console.log("Gemini response received via proxy:", responseText);
+      console.log("Gemini response received from SDK:", responseText);
       const aiData = parseAIJSON(responseText);
       
       // Normalize AI response to match our internal ranges
@@ -1675,19 +1698,14 @@ function AppContent() {
       IMPORTANTE: Toda la respuesta de texto debe ser en ESPAÑOL.
       Responde ÚNICAMENTE con el JSON.`;
 
-      console.log("Sending request to Gemini via Server Proxy...");
-      const response = await axios.post('/api/ai/analyze-photo', {
-        prompt,
-        imageData,
-        mimeType: blob.type || "image/jpeg"
-      });
+      console.log("Sending request to Gemini via Frontend SDK...");
+      const responseText = await analyzePhotoAI(imageData, blob.type || "image/jpeg", prompt);
 
-      if (!response.data || !response.data.result) {
+      if (!responseText) {
         throw new Error("No se recibió respuesta válida de la IA");
       }
 
-      const responseText = response.data.result;
-      console.log("Gemini response received from server:", responseText);
+      console.log("Gemini response received from SDK:", responseText);
       const analysis = parseAIJSON(responseText);
 
       setPhotos(prev => prev.map(p => p.id === id ? { 
@@ -1716,9 +1734,15 @@ function AppContent() {
   };
 
   const navigatePhoto = (direction: 'prev' | 'next') => {
-    // Issue 2.6 fix: Navigate over filtered list
-    const list = filteredPhotos.length > 0 ? filteredPhotos : photos;
+    const list = filteredPhotos;
+    if (list.length === 0) return;
+    
     const currentIndex = list.findIndex(p => p.id === selectedPhotoId);
+    if (currentIndex === -1) {
+      setSelectedPhotoId(list[0].id);
+      return;
+    }
+    
     let nextIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
     
     if (nextIndex >= list.length) nextIndex = 0;
@@ -2506,7 +2530,11 @@ function AppContent() {
                               layoutId={photo.id}
                               initial={{ opacity: 0, y: 20 }}
                               animate={{ opacity: 1, y: 0 }}
-                              className={`group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border transition-all shadow-2xl ${selectedPhotoIds.includes(photo.id) ? 'border-amber-500 ring-1 ring-amber-500' : 'border-zinc-800 hover:border-amber-500/50'}`}
+                              onClick={() => {
+                                setSelectedPhotoId(photo.id);
+                                setActiveTab('editor');
+                              }}
+                              className={`group relative aspect-[4/5] bg-zinc-900 rounded-xl overflow-hidden border transition-all shadow-2xl cursor-pointer ${selectedPhotoIds.includes(photo.id) ? 'border-amber-500 ring-1 ring-amber-500' : 'border-zinc-800 hover:border-amber-500/50'}`}
                             >
                               <div className="w-full h-full relative">
                                 {/* Selection Checkbox */}
@@ -2583,10 +2611,6 @@ function AppContent() {
                                   <Button 
                                     size="sm" 
                                     className="flex-1 bg-white text-black hover:bg-zinc-200 h-8 text-[10px] uppercase font-bold"
-                                    onClick={() => {
-                                      setSelectedPhotoId(photo.id);
-                                      setActiveTab('editor');
-                                    }}
                                   >
                                     Editar Luz
                                   </Button>
@@ -2623,10 +2647,21 @@ function AppContent() {
                           <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6">
                             <ImageIcon className="w-8 h-8 text-zinc-700" />
                           </div>
-                          <h4 className="text-white font-bold text-lg mb-2">Tu galería está vacía</h4>
-                          <p className="text-zinc-500 text-sm max-w-xs mx-auto">
-                            Empieza subiendo tu primera fotografía para verla aquí.
-                          </p>
+                          {searchQuery || selectedFolderId !== 'all' ? (
+                            <>
+                              <h4 className="text-white font-bold text-lg mb-2">Sin resultados</h4>
+                              <p className="text-zinc-500 text-sm max-w-xs mx-auto uppercase tracking-widest font-bold text-[10px]">
+                                No hay fotos que coincidan con tu búsqueda o filtros actuales.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <h4 className="text-white font-bold text-lg mb-2">Tu galería está vacía</h4>
+                              <p className="text-zinc-500 text-sm max-w-xs mx-auto uppercase tracking-widest font-bold text-[10px]">
+                                Empieza subiendo tu primera fotografía para verla aquí.
+                              </p>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
@@ -3250,39 +3285,39 @@ function AppContent() {
                       <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
                     </div>
                   ) : (
-                      <AnimatePresence mode="wait">
+                      <AnimatePresence>
                         <motion.div 
                           key={selectedPhoto.id}
-                          initial={{ opacity: 0, scale: 0.98 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0, scale: 1.02 }}
-                          transition={{ duration: 0.2, ease: "easeOut" }}
-                          className="relative flex items-center justify-center w-full h-full"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.15 }}
+                          className="relative flex items-center justify-center w-full h-full min-h-[300px]"
                           style={{ 
                             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                             transition: 'none'
                           }}
                         >
-                           {/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) && !selectedPhoto.thumbnailUrl ? (
+                           {/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) && (!selectedPhoto.thumbnailUrl || selectedPhoto.thumbnailUrl === selectedPhoto.url) ? (
                            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-900/50 p-12 rounded-2xl border border-zinc-800 backdrop-blur-xl">
                              <ImageIcon className="w-20 h-20 mb-6 opacity-20" />
-                             <h3 className="text-xl font-bold text-white mb-2">Archivo RAW Detectado</h3>
-                             <p className="text-zinc-400 text-center max-w-xs mb-6">
-                               Los navegadores no pueden mostrar archivos RAW directamente. Por favor, sube una miniatura JPEG o espera a que el servidor la genere.
+                             <h3 className="text-xl font-bold text-white mb-2">Procesando RAW...</h3>
+                             <p className="text-zinc-400 text-center max-w-xs mb-6 text-sm">
+                               Estamos extrayendo la vista previa de tu archivo RAW. Esto puede tardar unos segundos dependiendo del tamaño.
                              </p>
-                             <div className="flex gap-3">
-                               <Button variant="outline" size="sm" className="border-zinc-800" onClick={() => setSelectedPhotoId(null)}>
-                                 Volver a Galería
-                               </Button>
+                             <div className="flex items-center gap-3">
+                               <Activity className="w-4 h-4 text-amber-500 animate-spin" />
+                               <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Generando miniatura</span>
                              </div>
                            </div>
                          ) : (
                            <PhotoCanvas 
                              ref={imageRef}
-                             imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)}
+                             imageUrl={fixImageUrl((selectedPhoto.thumbnailUrl && selectedPhoto.thumbnailUrl !== selectedPhoto.url) ? selectedPhoto.thumbnailUrl : selectedPhoto.url)}
                              settings={previewSettings || selectedPhoto.settings}
                              isComparing={isComparing}
                              compareValue={compareValue}
+                             onHistogramData={handleHistogramData}
                            />
                          )}
 
@@ -3338,7 +3373,7 @@ function AppContent() {
 
                 {/* Filmstrip */}
                 <Filmstrip 
-                  photos={photos} 
+                  photos={filteredPhotos} 
                   selectedPhotoId={selectedPhotoId} 
                   onSelect={setSelectedPhotoId} 
                 />
@@ -3380,6 +3415,7 @@ function AppContent() {
                               <Histogram 
                                 settings={previewSettings || selectedPhoto.settings} 
                                 imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                                pixelData={histogramPixels}
                               />
                             </div>
                           </div>

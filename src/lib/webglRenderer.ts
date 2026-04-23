@@ -8,6 +8,9 @@ export class WebGLRenderer {
   private positionBuffer: WebGLBuffer | null = null;
   private texCoordBuffer: WebGLBuffer | null = null;
 
+  private analysisFramebuffer: WebGLFramebuffer | null = null;
+  private analysisTexture: WebGLTexture | null = null;
+
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl", { 
       preserveDrawingBuffer: true,
@@ -18,6 +21,19 @@ export class WebGLRenderer {
     this.gl = gl;
     this.program = this.createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
     this.initBuffers();
+    this.initAnalysisFBO();
+  }
+
+  private initAnalysisFBO() {
+    const size = 128;
+    this.analysisFramebuffer = this.gl.createFramebuffer();
+    this.analysisTexture = this.gl.createTexture();
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.analysisTexture);
+    this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, size, size, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, null);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.analysisFramebuffer);
+    this.gl.framebufferTexture2D(this.gl.FRAMEBUFFER, this.gl.COLOR_ATTACHMENT0, this.gl.TEXTURE_2D, this.analysisTexture, 0);
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
   }
 
   private createShader(type: number, source: string): WebGLShader {
@@ -61,7 +77,12 @@ export class WebGLRenderer {
     ]), this.gl.STATIC_DRAW);
   }
 
+  private currentImage: HTMLImageElement | HTMLCanvasElement | null = null;
+
   public setImage(img: HTMLImageElement | HTMLCanvasElement) {
+    if (this.currentImage === img) return;
+    this.currentImage = img;
+
     if (this.texture) this.gl.deleteTexture(this.texture);
     this.texture = this.gl.createTexture();
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
@@ -72,15 +93,28 @@ export class WebGLRenderer {
     this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
     this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR);
     
-    this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
+    try {
+      this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
+    } catch (e) {
+      console.error("WebGL texImage2D failed:", e);
+      throw e;
+    }
   }
 
   public render(settings: LightingSettings, width: number, height: number) {
+    if (!this.texture || width <= 0 || height <= 0) return;
+    
     this.gl.viewport(0, 0, width, height);
     this.gl.clearColor(0, 0, 0, 0);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
     this.gl.useProgram(this.program);
+
+    // Bind texture to unit 0
+    this.gl.activeTexture(this.gl.TEXTURE0);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    const imageLoc = this.gl.getUniformLocation(this.program, "u_image");
+    this.gl.uniform1i(imageLoc, 0);
 
     // Attributes
     const posLoc = this.gl.getAttribLocation(this.program, "a_position");
@@ -125,13 +159,18 @@ export class WebGLRenderer {
     this.setUniform("u_saturation", (s.saturation ?? 100) / 100);
     this.setUniform("u_vibrance", ((s.vibrance ?? 100) - 100) / 100);
     this.setUniform("u_clarity", (s.clarity ?? 0) / 100);
+    this.setUniform("u_texture", (s.texture ?? 0) / 100);
     this.setUniform("u_dehaze", (s.dehaze ?? 0) / 100);
     this.setUniform("u_vignette", (s.vignette ?? 0) / 100);
     this.setUniform("u_grain", (s.grain ?? 0) / 100);
+    this.setUniform("u_sepia", (s.sepia ?? 0) / 100);
+    this.setUniform("u_sharpening", (s.sharpening ?? 0) / 100);
     this.setUniform("u_time", performance.now() / 1000);
+    this.setUniformVec2("u_resolution", [width, height]);
 
     // Color Grading (Split Toning)
     this.setUniformVec3("u_shadowTint", this.hexToRgb(s.shadowTint));
+    this.setUniformVec3("u_midtoneTint", this.hexToRgb(s.midtoneTint));
     this.setUniformVec3("u_highlightTint", this.hexToRgb(s.highlightTint));
     this.setUniform("u_balance", (s.balance ?? 0) / 100);
 
@@ -189,8 +228,39 @@ export class WebGLRenderer {
     this.gl.uniform3fv(loc, value);
   }
 
+  public getPixels(width: number, height: number): Uint8Array {
+    const pixels = new Uint8Array(width * height * 4);
+    this.gl.readPixels(0, 0, width, height, this.gl.RGBA, this.gl.UNSIGNED_BYTE, pixels);
+    return pixels;
+  }
+
+  /**
+   * Captures a 128x128 version of the image with the given settings.
+   * Useful for histograms without blocking the UI thread.
+   */
+  public getAnalysisPixels(settings: LightingSettings): Uint8Array {
+    if (!this.analysisFramebuffer) return new Uint8Array(128 * 128 * 4);
+    
+    // Bind the analysis framebuffer
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.analysisFramebuffer);
+    
+    // Render to the small FBO (128x128)
+    this.render(settings, 128, 128);
+    
+    // Read pixels from the FBO
+    const pixels = new Uint8Array(128 * 128 * 4);
+    this.gl.readPixels(0, 0, 128, 128, this.gl.RGBA, this.gl.UNSIGNED_BYTE, pixels);
+    
+    // Unbind the framebuffer
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    
+    return pixels;
+  }
+
   public destroy() {
     if (this.texture) this.gl.deleteTexture(this.texture);
+    if (this.analysisTexture) this.gl.deleteTexture(this.analysisTexture);
+    if (this.analysisFramebuffer) this.gl.deleteFramebuffer(this.analysisFramebuffer);
     if (this.positionBuffer) this.gl.deleteBuffer(this.positionBuffer);
     if (this.texCoordBuffer) this.gl.deleteBuffer(this.texCoordBuffer);
     this.gl.deleteProgram(this.program);

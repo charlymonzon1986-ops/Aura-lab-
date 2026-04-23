@@ -127,208 +127,227 @@ interface PhotoCanvasProps {
   compareValue?: number;
   className?: string;
   onImageReady?: (canvas: HTMLCanvasElement) => void;
+  onHistogramData?: (pixels: Uint8Array) => void;
 }
 
-export const PhotoCanvas = React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>(({ 
+export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>(({ 
   imageUrl, 
   settings, 
   isComparing = false, 
   compareValue = 50,
   className = "",
-  onImageReady
+  onImageReady,
+  onHistogramData
 }, ref) => {
   const internalCanvasRef = React.useRef<HTMLCanvasElement>(null);
   const canvasRef = (ref as React.RefObject<HTMLCanvasElement>) || internalCanvasRef;
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [img, setImg] = React.useState<HTMLImageElement | null>(null);
   const rendererRef = React.useRef<WebGLRenderer | null>(null);
+  const histogramTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
   // Load image
   React.useEffect(() => {
     if (!imageUrl) {
-      console.log("PhotoCanvas: No imageUrl provided");
+      setImg(null);
       return;
     }
     
-    console.log("PhotoCanvas: Starting to load image:", imageUrl);
-    const i = new Image();
-    i.crossOrigin = "anonymous";
-    
-    const timeout = setTimeout(() => {
-      if (!i.complete) {
-        console.warn("PhotoCanvas: Image load timeout for:", imageUrl);
-        toast.error("Tiempo de carga de imagen excedido. Reintenta.");
-      }
-    }, 15000);
+    let isMounted = true;
+    const tryLoad = (useCors: boolean) => {
+      console.log(`PhotoCanvas: Loading image (CORS: ${useCors}):`, imageUrl);
+      const i = new Image();
+      if (useCors) i.crossOrigin = "anonymous";
+      
+      const timeout = setTimeout(() => {
+        if (!i.complete && isMounted) {
+          console.warn("PhotoCanvas: Image load timeout");
+          if (useCors) {
+            console.log("PhotoCanvas: Retrying without CORS...");
+            tryLoad(false);
+          }
+        }
+      }, 8000);
 
-    i.onload = () => {
-      clearTimeout(timeout);
-      console.log("PhotoCanvas: Image loaded successfully:", imageUrl, { width: i.width, height: i.height });
-      setImg(i);
+      i.onload = () => {
+        clearTimeout(timeout);
+        if (isMounted) {
+          console.log("PhotoCanvas: Success:", i.width, "x", i.height);
+          setImg(i);
+        }
+      };
+      
+      i.onerror = () => {
+        clearTimeout(timeout);
+        if (isMounted) {
+          if (useCors) {
+            console.log("PhotoCanvas: CORS failure, retrying without CORS...");
+            tryLoad(false);
+          } else {
+            console.error("PhotoCanvas: Hard load failure:", imageUrl);
+            toast.error("No se pudo cargar la imagen principal.");
+          }
+        }
+      };
+      
+      i.src = imageUrl;
     };
+
+    tryLoad(true);
     
-    i.onerror = () => {
-      clearTimeout(timeout);
-      console.error("PhotoCanvas: Failed to load image:", imageUrl);
-      toast.error("Error al cargar la imagen. Verifica tu conexión.");
+    return () => {
+      isMounted = false;
     };
-    
-    i.src = imageUrl;
-    
-    return () => clearTimeout(timeout);
   }, [imageUrl]);
 
-  // Clean up renderer on unmount
+  // Handle Resize
+  const [containerSize, setContainerSize] = React.useState({ width: 0, height: 0 });
   React.useEffect(() => {
-    return () => {
-      if (rendererRef.current) {
-        rendererRef.current.destroy();
-        rendererRef.current = null;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const ro = new ResizeObserver((entries) => {
+      if (entries[0]) {
+        const { width, height } = entries[0].contentRect;
+        setContainerSize({ width, height });
       }
-    };
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
   }, []);
 
-  // Render loop
+  // Use a cleaner render loop
   React.useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container || !img) return;
 
-    let isDestroyed = false;
+    const cWidth = containerSize.width || container.clientWidth;
+    const cHeight = containerSize.height || container.clientHeight;
+    
+    if (cWidth === 0 || cHeight === 0) return;
 
-    const updateSize = async () => {
-      if (!img || isDestroyed) return;
-      
-      const containerRect = container.getBoundingClientRect();
-      const containerWidth = containerRect.width;
-      const containerHeight = containerRect.height;
-      if (containerWidth === 0 || containerHeight === 0) return;
+    const rotInput = typeof settings.rotation === 'number' ? settings.rotation : 0;
+    const rot = Math.abs(rotInput % 360);
+    const isVertical = rot === 90 || rot === 270;
+    const imgWidth = isVertical ? img.height : img.width;
+    const imgHeight = isVertical ? img.width : img.height;
+    
+    const imgRatio = imgWidth / imgHeight;
+    const containerRatio = cWidth / cHeight;
+    
+    let drawWidth, drawHeight;
+    if (imgRatio > containerRatio) {
+      drawWidth = cWidth;
+      drawHeight = cWidth / imgRatio;
+    } else {
+      drawHeight = cHeight;
+      drawWidth = cHeight * imgRatio;
+    }
 
-      const rot = Math.abs(settings.rotation % 360);
-      const isVertical = rot === 90 || rot === 270;
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.floor(drawWidth * dpr);
+    const h = Math.floor(drawHeight * dpr);
+
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      canvas.style.width = `${drawWidth}px`;
+      canvas.style.height = `${drawHeight}px`;
       
-      const imgWidth = isVertical ? img.height : img.width;
-      const imgHeight = isVertical ? img.width : img.height;
-      
-      const imgRatio = imgWidth / imgHeight;
-      const containerRatio = containerWidth / containerHeight;
-      
-      let drawWidth, drawHeight;
-      if (imgRatio > containerRatio) {
-        drawWidth = containerWidth;
-        drawHeight = containerWidth / imgRatio;
-      } else {
-        drawHeight = containerHeight;
-        drawWidth = containerHeight * imgRatio;
+      if (rendererRef.current) {
+        rendererRef.current.destroy();
+        rendererRef.current = null;
       }
+    }
 
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.floor(drawWidth * dpr);
-      const h = Math.floor(drawHeight * dpr);
-
-      // CRITICAL FIX: Only update width/height if they actually changed to preserve context
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.style.width = `${drawWidth}px`;
-        canvas.style.height = `${drawHeight}px`;
-        canvas.width = w;
-        canvas.height = h;
-        
-        // Context is reset when width/height change, recreate renderer
-        if (rendererRef.current) {
-          rendererRef.current.destroy();
-          rendererRef.current = null;
-        }
-      }
-
+    const render = () => {
+      if (!img || !img.complete || img.naturalWidth === 0) return;
+      
       try {
         if (!rendererRef.current) {
           rendererRef.current = new WebGLRenderer(canvas);
-          rendererRef.current.setImage(img);
-          (canvas as any)._lastImg = img;
         }
         const renderer = rendererRef.current;
-        
-        if ((canvas as any)._lastImg !== img) {
-          renderer.setImage(img);
-          (canvas as any)._lastImg = img;
-        }
+        renderer.setImage(img);
 
         if (isComparing) {
           const gl = canvas.getContext('webgl')!;
           gl.enable(gl.SCISSOR_TEST);
           const splitX = Math.floor(w * (compareValue / 100));
+          
+          // Draw Original on left
           gl.scissor(0, 0, splitX, h);
-          renderer.render({ ...settings, exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null }, w, h);
+          renderer.render({ 
+            ...settings, 
+            exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, 
+            warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, 
+            vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null,
+            texture: 0, clarity: 0, dehaze: 0, sharpening: 0, noiseReduction: 0,
+            shadowTint: "transparent", midtoneTint: "transparent", highlightTint: "transparent",
+            balance: 0
+          }, w, h);
+          
           gl.scissor(splitX, 0, w - splitX, h);
           renderer.render(settings, w, h);
           gl.disable(gl.SCISSOR_TEST);
         } else {
           renderer.render(settings, w, h);
         }
-
+        
+        // Throttled Histogram Analysis (150ms)
+        if (onHistogramData) {
+          if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
+          histogramTimeoutRef.current = setTimeout(() => {
+            if (rendererRef.current) {
+              const pixels = rendererRef.current.getAnalysisPixels(settings);
+              onHistogramData(pixels);
+            }
+          }, 150);
+        }
+        
         if (onImageReady) onImageReady(canvas);
       } catch (e) {
-        console.warn("WebGL failed, using fallback:", e);
+        console.error("WebGL Draw Failure:", e);
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.clearRect(0, 0, w, h);
           if (isComparing) {
+            const splitX = w * (compareValue / 100);
             ctx.save();
-            ctx.beginPath();
-            ctx.rect(0, 0, w * (compareValue / 100), h);
-            ctx.clip();
-            ctx.filter = 'none';
+            ctx.beginPath(); ctx.rect(0, 0, splitX, h); ctx.clip();
             ctx.drawImage(img, 0, 0, w, h);
             ctx.restore();
             ctx.save();
-            ctx.beginPath();
-            ctx.rect(w * (compareValue / 100), 0, w, h);
-            ctx.clip();
+            ctx.beginPath(); ctx.rect(splitX, 0, w - splitX, h); ctx.clip();
+            ctx.filter = getFilterString(settings);
+            ctx.drawImage(img, 0, 0, w, h);
+            ctx.restore();
+          } else {
+            ctx.filter = getFilterString(settings);
+            ctx.drawImage(img, 0, 0, w, h);
           }
-
-          ctx.filter = getFilterString(settings);
-          ctx.save();
-          
-          const cropX = (settings.cropLeft / 100) * img.width;
-          const cropY = (settings.cropTop / 100) * img.height;
-          const cropW = img.width * (1 - (settings.cropLeft + settings.cropRight) / 100);
-          const cropH = img.height * (1 - (settings.cropTop + settings.cropBottom) / 100);
-          
-          ctx.translate(w / 2, h / 2);
-          ctx.rotate((settings.rotation * Math.PI) / 180);
-          ctx.scale(settings.flipX ? -1 : 1, settings.flipY ? -1 : 1);
-          
-          const rotVal = Math.abs(settings.rotation % 360);
-          const isVert = rotVal === 90 || rotVal === 270;
-          const dW = isVert ? h : w;
-          const dH = isVert ? w : h;
-          
-          ctx.drawImage(img, cropX, cropY, cropW, cropH, -dW / 2, -dH / 2, dW, dH);
-          ctx.restore();
-          if (isComparing) ctx.restore();
         }
       }
     };
 
-    const resizeObserver = new ResizeObserver(() => {
-      updateSize();
-    });
-
-    resizeObserver.observe(container);
-    updateSize(); // Initial call
-
+    render();
+    
     return () => {
-      isDestroyed = true;
-      resizeObserver.disconnect();
+      if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
     };
-  }, [img, settings, isComparing, compareValue]);
+  }, [img, settings, isComparing, compareValue, containerSize, onHistogramData]);
 
   return (
-    <div ref={containerRef} className={`relative w-full h-full flex items-center justify-center overflow-hidden ${className}`}>
+    <div ref={containerRef} className={`absolute inset-0 flex items-center justify-center overflow-visible ${className}`}>
       <canvas 
         ref={canvasRef} 
-        className="shadow-2xl rounded-sm transition-opacity duration-300"
+        className="shadow-[0_0_100px_rgba(0,0,0,0.9)] rounded-sm bg-black"
+        style={{
+          display: 'block',
+          userSelect: 'none'
+        }}
       />
     </div>
   );
-});
+}));

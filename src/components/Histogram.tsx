@@ -1,106 +1,60 @@
 import * as React from "react";
 import { LightingSettings } from "../types";
-import { getFilterString } from "../lib/imageProcessing";
 
 interface HistogramProps {
   settings: LightingSettings;
   imageUrl: string;
+  pixelData?: Uint8Array;
 }
 
-export function Histogram({ settings, imageUrl }: HistogramProps) {
+export function Histogram({ settings, imageUrl, pixelData }: HistogramProps) {
   const [data, setData] = React.useState<{ r: number[], g: number[], b: number[], l: number[] }>({
     r: new Array(256).fill(0),
     g: new Array(256).fill(0),
     b: new Array(256).fill(0),
     l: new Array(256).fill(0)
   });
-  const [isLoading, setIsLoading] = React.useState(false);
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
-  const imgRef = React.useRef<HTMLImageElement | null>(null);
+  
+  const calculateFromPixels = React.useCallback((pixels: Uint8Array) => {
+    const rBins = new Array(256).fill(0);
+    const gBins = new Array(256).fill(0);
+    const bBins = new Array(256).fill(0);
+    const lBins = new Array(256).fill(0);
 
-  React.useEffect(() => {
-    if (!imageUrl) return;
-
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    imgRef.current = img;
-    
-    img.onload = () => {
-      calculate();
-    };
-    img.src = imageUrl;
-  }, [imageUrl]);
-
-  const calculate = React.useCallback(() => {
-    const img = imgRef.current;
-    const canvas = canvasRef.current;
-    if (!canvas || !img || !img.complete || !img.width) return;
-
-    setIsLoading(true);
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
-
-    // Use a fixed size for consistent calculation
-    const size = 128;
-    canvas.width = size;
-    canvas.height = size;
-
-    ctx.clearRect(0, 0, size, size);
-    
-    // Apply filters from imageProcessing
-    ctx.filter = getFilterString(settings);
-    
-    try {
-      ctx.drawImage(img, 0, 0, size, size);
-      const imageData = ctx.getImageData(0, 0, size, size);
-      const pixels = imageData.data;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
       
-      const rBins = new Array(256).fill(0);
-      const gBins = new Array(256).fill(0);
-      const bBins = new Array(256).fill(0);
-      const lBins = new Array(256).fill(0);
-
-      for (let i = 0; i < pixels.length; i += 4) {
-        const r = pixels[i];
-        const g = pixels[i + 1];
-        const b = pixels[i + 2];
-        
-        rBins[r]++;
-        gBins[g]++;
-        bBins[b]++;
-        
-        // Standard luminance formula
-        const luma = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
-        lBins[Math.min(luma, 255)]++;
-      }
-
-      // Find max value to normalize, ignoring extreme spikes
-      const findMax = (bins: number[]) => {
-        const middleBins = bins.slice(1, 255);
-        const maxInMiddle = Math.max(...middleBins);
-        return Math.max(maxInMiddle, bins[0], bins[255], 1);
-      };
+      rBins[r]++;
+      gBins[g]++;
+      bBins[b]++;
       
-      const maxVal = Math.max(findMax(rBins), findMax(gBins), findMax(bBins), findMax(lBins));
-
-      setData({
-        r: rBins.map(v => (v / maxVal) * 100),
-        g: gBins.map(v => (v / maxVal) * 100),
-        b: bBins.map(v => (v / maxVal) * 100),
-        l: lBins.map(v => (v / maxVal) * 100)
-      });
-    } catch (e) {
-      console.error("Histogram calculation error:", e);
-    } finally {
-      setIsLoading(false);
+      const luma = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+      lBins[Math.min(luma, 255)]++;
     }
-  }, [settings]);
 
-  // Debounce calculation on settings change
+    const findMax = (bins: number[]) => {
+      const middleBins = bins.slice(1, 255);
+      const maxInMiddle = Math.max(...middleBins);
+      return Math.max(maxInMiddle, bins[0], bins[255], 1);
+    };
+    
+    const maxVal = Math.max(findMax(rBins), findMax(gBins), findMax(bBins), findMax(lBins));
+
+    setData({
+      r: rBins.map(v => (v / maxVal) * 100),
+      g: gBins.map(v => (v / maxVal) * 100),
+      b: bBins.map(v => (v / maxVal) * 100),
+      l: lBins.map(v => (v / maxVal) * 100)
+    });
+  }, []);
+
   React.useEffect(() => {
-    const timeoutId = setTimeout(calculate, 100);
-    return () => clearTimeout(timeoutId);
-  }, [calculate]);
+    if (pixelData) {
+      calculateFromPixels(pixelData);
+    }
+  }, [pixelData, calculateFromPixels]);
 
   const generatePath = (values: number[]) => {
     if (values.length === 0) return "";
@@ -115,9 +69,7 @@ export function Histogram({ settings, imageUrl }: HistogramProps) {
   };
 
   return (
-    <div className={`h-32 w-64 bg-black/80 backdrop-blur-xl rounded-xl border border-white/10 p-4 flex flex-col gap-2 overflow-hidden relative transition-all duration-500 ${isLoading ? 'opacity-50 scale-95' : 'opacity-100 scale-100'} shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-50`}>
-      <canvas ref={canvasRef} className="hidden" />
-      
+    <div className={`h-32 w-64 bg-black/80 backdrop-blur-xl rounded-xl border border-white/10 p-4 flex flex-col gap-2 overflow-hidden relative transition-all duration-300 shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-50`}>
       <div className="flex-1 relative">
         <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-10">
           <div className="border-t border-white w-full" />
@@ -142,7 +94,7 @@ export function Histogram({ settings, imageUrl }: HistogramProps) {
       <div className="flex justify-between items-center">
         <div className="flex flex-col">
           <span className="text-[8px] font-bold uppercase tracking-[0.2em] text-zinc-500">
-            {isLoading ? 'Analizando...' : 'Histograma Real'}
+            Histograma Real
           </span>
           <span className="text-[10px] font-medium text-zinc-300">RGB + Luminancia</span>
         </div>
