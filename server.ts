@@ -101,13 +101,14 @@ async function startServer() {
   // Restricted CORS
   const allowedOrigins = [
     process.env.APP_URL,
-    'http://localhost:3000'
+    'http://localhost:3000',
+    'https://aura-lab.vercel.app'
   ].filter(Boolean) as string[];
 
   app.use(cors({
     origin: (origin, callback) => {
-      // Allow AI Studio previews and local dev
-      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.run.app') || origin.endsWith('.web.app')) {
+      // Allow specific origins, same-origin (null), or Vercel domains
+      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));

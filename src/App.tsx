@@ -2094,13 +2094,7 @@ function AppContent() {
               <span className="flex h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
               <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">Versión {latestVersion} Disponible</span>
             </div>
-            <Button 
-              variant="link" 
-              className="h-auto p-0 text-[10px] text-zinc-300 underline font-bold"
-              onClick={() => window.open('https://github.com/charlymonzon/aura-lab', '_blank')}
-            >
-              Descargar Actualización
-            </Button>
+
           </div>
         )}
         
