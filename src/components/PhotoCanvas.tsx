@@ -6,7 +6,7 @@ import { WebGLRenderer } from "../lib/webglRenderer";
 
 export async function renderImageToCanvas(
   canvas: HTMLCanvasElement,
-  img: HTMLImageElement,
+  img: HTMLImageElement | ImageData,
   settings: LightingSettings,
   options: { 
     isComparing?: boolean; 
@@ -26,7 +26,7 @@ export async function renderImageToCanvas(
     // Try WebGL first for high-performance rendering
     const renderer = new WebGLRenderer(canvas);
     
-    // 1. Draw Original (if comparing)
+    // 1. Draw Original
     renderer.setImage(img);
     if (isComparing) {
       // Scissor test for comparison
@@ -57,14 +57,25 @@ export async function renderImageToCanvas(
     
     ctx.clearRect(0, 0, drawWidth, drawHeight);
     
-    // (Rest of the 2D logic remains as fallback)
+    const drawImg = (context: CanvasRenderingContext2D, dx: number, dy: number, dw: number, dh: number) => {
+      if (img instanceof ImageData) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = img.width;
+        tempCanvas.height = img.height;
+        tempCanvas.getContext('2d')?.putImageData(img, 0, 0);
+        context.drawImage(tempCanvas, dx, dy, dw, dh);
+      } else {
+        context.drawImage(img, dx, dy, dw, dh);
+      }
+    };
+
     if (isComparing) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, 0, drawWidth * (compareValue / 100), drawHeight);
       ctx.clip();
       ctx.filter = 'none';
-      ctx.drawImage(img, 0, 0, drawWidth, drawHeight);
+      drawImg(ctx, 0, 0, drawWidth, drawHeight);
       ctx.restore();
       ctx.save();
       ctx.beginPath();
@@ -84,44 +95,29 @@ export async function renderImageToCanvas(
     ctx.rotate((settings.rotation * Math.PI) / 180);
     ctx.scale(settings.flipX ? -1 : 1, settings.flipY ? -1 : 1);
     
-    // In rotated 2D context, we still need to draw with correct aspect ratio
     const rotVal = Math.abs(settings.rotation % 360);
     const isVertical = rotVal === 90 || rotVal === 270;
     const destW = isVertical ? drawHeight : drawWidth;
     const destH = isVertical ? drawWidth : drawHeight;
     
-    ctx.drawImage(img, cropX, cropY, cropW, cropH, -destW / 2, -destH / 2, destW, destH);
+    if (img instanceof ImageData) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = img.width;
+      tempCanvas.height = img.height;
+      tempCanvas.getContext('2d')?.putImageData(img, 0, 0);
+      ctx.drawImage(tempCanvas, cropX, cropY, cropW, cropH, -destW / 2, -destH / 2, destW, destH);
+    } else {
+      ctx.drawImage(img, cropX, cropY, cropW, cropH, -destW / 2, -destH / 2, destW, destH);
+    }
     
-    // Add Color Tints in 2D fallback
-    if (settings.shadowTint && settings.shadowTint !== "transparent") {
-      ctx.globalCompositeOperation = 'soft-light';
-      ctx.fillStyle = settings.shadowTint;
-      ctx.globalAlpha = 0.6;
-      ctx.fillRect(0, 0, drawWidth, drawHeight);
-    }
-    if (settings.midtoneTint && settings.midtoneTint !== "transparent") {
-      ctx.globalCompositeOperation = 'overlay';
-      ctx.fillStyle = settings.midtoneTint;
-      ctx.globalAlpha = 0.5;
-      ctx.fillRect(0, 0, drawWidth, drawHeight);
-    }
-    if (settings.highlightTint && settings.highlightTint !== "transparent") {
-      ctx.globalCompositeOperation = 'color';
-      ctx.fillStyle = settings.highlightTint;
-      ctx.globalAlpha = 0.4;
-      ctx.fillRect(0, 0, drawWidth, drawHeight);
-    }
-
     ctx.restore();
-
     if (isComparing) ctx.restore();
-
-    // Vignette/Grain/Tints (Omitted in fallback for brevity, but could be added back)
   }
 }
 
 interface PhotoCanvasProps {
-  imageUrl: string;
+  imageUrl?: string;
+  imageData?: ImageData | null;
   settings: LightingSettings;
   isComparing?: boolean;
   compareValue?: number;
@@ -132,6 +128,7 @@ interface PhotoCanvasProps {
 
 export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoCanvasProps>(({ 
   imageUrl, 
+  imageData,
   settings, 
   isComparing = false, 
   compareValue = 50,
@@ -142,14 +139,14 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
   const internalCanvasRef = React.useRef<HTMLCanvasElement>(null);
   const canvasRef = (ref as React.RefObject<HTMLCanvasElement>) || internalCanvasRef;
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const [img, setImg] = React.useState<HTMLImageElement | null>(null);
+  const [source, setSource] = React.useState<HTMLImageElement | ImageData | null>(null);
   const rendererRef = React.useRef<WebGLRenderer | null>(null);
   const histogramTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
-  // Load image
+  // Load image from URL
   React.useEffect(() => {
     if (!imageUrl) {
-      setImg(null);
+      if (!imageData) setSource(null);
       return;
     }
     
@@ -173,7 +170,7 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
         clearTimeout(timeout);
         if (isMounted) {
           console.log("PhotoCanvas: Success:", i.width, "x", i.height);
-          setImg(i);
+          setSource(i);
         }
       };
       
@@ -185,7 +182,6 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
             tryLoad(false);
           } else {
             console.error("PhotoCanvas: Hard load failure:", imageUrl);
-            toast.error("No se pudo cargar la imagen principal.");
           }
         }
       };
@@ -199,6 +195,13 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
       isMounted = false;
     };
   }, [imageUrl]);
+
+  // Use ImageData if provided
+  React.useEffect(() => {
+    if (imageData) {
+      setSource(imageData);
+    }
+  }, [imageData]);
 
   // Handle Resize
   const [containerSize, setContainerSize] = React.useState({ width: 0, height: 0 });
@@ -220,7 +223,7 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
   React.useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container || !img) return;
+    if (!canvas || !container || !source) return;
 
     const cWidth = containerSize.width || container.clientWidth;
     const cHeight = containerSize.height || container.clientHeight;
@@ -230,8 +233,10 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
     const rotInput = typeof settings.rotation === 'number' ? settings.rotation : 0;
     const rot = Math.abs(rotInput % 360);
     const isVertical = rot === 90 || rot === 270;
-    const imgWidth = isVertical ? img.height : img.width;
-    const imgHeight = isVertical ? img.width : img.height;
+    const srcWidth = source instanceof ImageData ? source.width : source.width;
+    const srcHeight = source instanceof ImageData ? source.height : source.height;
+    const imgWidth = isVertical ? srcHeight : srcWidth;
+    const imgHeight = isVertical ? srcWidth : srcHeight;
     
     const imgRatio = imgWidth / imgHeight;
     const containerRatio = cWidth / cHeight;
@@ -262,14 +267,15 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
     }
 
     const render = () => {
-      if (!img || !img.complete || img.naturalWidth === 0) return;
+      if (!source) return;
+      if (source instanceof HTMLImageElement && (!source.complete || source.naturalWidth === 0)) return;
       
       try {
         if (!rendererRef.current) {
           rendererRef.current = new WebGLRenderer(canvas);
         }
         const renderer = rendererRef.current;
-        renderer.setImage(img);
+        renderer.setImage(source);
 
         if (isComparing) {
           const gl = canvas.getContext('webgl')!;
@@ -284,6 +290,7 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
             warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, 
             vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null,
             texture: 0, clarity: 0, dehaze: 0, sharpening: 0, noiseReduction: 0,
+            focus: 0, distortion: 0,
             shadowTint: "transparent", midtoneTint: "transparent", highlightTint: "transparent",
             balance: 0
           }, w, h);
@@ -316,16 +323,40 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
             const splitX = w * (compareValue / 100);
             ctx.save();
             ctx.beginPath(); ctx.rect(0, 0, splitX, h); ctx.clip();
-            ctx.drawImage(img, 0, 0, w, h);
+            if (source instanceof ImageData) {
+              const tempCanvas = document.createElement('canvas');
+              tempCanvas.width = source.width;
+              tempCanvas.height = source.height;
+              tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
+              ctx.drawImage(tempCanvas, 0, 0, w, h);
+            } else {
+              ctx.drawImage(source, 0, 0, w, h);
+            }
             ctx.restore();
             ctx.save();
             ctx.beginPath(); ctx.rect(splitX, 0, w - splitX, h); ctx.clip();
             ctx.filter = getFilterString(settings);
-            ctx.drawImage(img, 0, 0, w, h);
+            if (source instanceof ImageData) {
+              const tempCanvas = document.createElement('canvas');
+              tempCanvas.width = source.width;
+              tempCanvas.height = source.height;
+              tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
+              ctx.drawImage(tempCanvas, 0, 0, w, h);
+            } else {
+              ctx.drawImage(source, 0, 0, w, h);
+            }
             ctx.restore();
           } else {
             ctx.filter = getFilterString(settings);
-            ctx.drawImage(img, 0, 0, w, h);
+            if (source instanceof ImageData) {
+              const tempCanvas = document.createElement('canvas');
+              tempCanvas.width = source.width;
+              tempCanvas.height = source.height;
+              tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
+              ctx.drawImage(tempCanvas, 0, 0, w, h);
+            } else {
+              ctx.drawImage(source, 0, 0, w, h);
+            }
           }
         }
       }
@@ -336,7 +367,7 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
     return () => {
       if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
     };
-  }, [img, settings, isComparing, compareValue, containerSize, onHistogramData]);
+  }, [source, settings, isComparing, compareValue, containerSize, onHistogramData]);
 
   return (
     <div ref={containerRef} className={`absolute inset-0 flex items-center justify-center overflow-visible ${className}`}>

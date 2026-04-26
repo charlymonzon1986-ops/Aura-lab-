@@ -111,3 +111,17 @@ export const fixImageUrl = (url: string) => {
   
   return url;
 };
+
+export const isRawFile = (url: string) => {
+  if (!url || typeof url !== 'string') return false;
+  const path = url.split('?')[0].toLowerCase();
+  return (
+    path.endsWith('.arw') || 
+    path.endsWith('.cr2') || 
+    path.endsWith('.nef') || 
+    path.endsWith('.dng') || 
+    path.endsWith('.orf') || 
+    path.endsWith('.raf') || 
+    path.endsWith('.gpr')
+  );
+};

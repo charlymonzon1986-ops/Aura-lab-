@@ -88,7 +88,9 @@ import { PhotoCanvas, renderImageToCanvas } from "@/src/components/PhotoCanvas";
 import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
 import { CropOverlay } from "@/src/components/CropOverlay";
 import { Photo, DEFAULT_SETTINGS, LightingSettings, Client, PhotoVersion, ClientGallery, UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } from "@/src/types";
-import { getFilterString, fixImageUrl } from "@/src/lib/imageProcessing";
+import { getFilterString, fixImageUrl, isRawFile } from "@/src/lib/imageProcessing";
+import { useRAWProcessor } from "@/src/hooks/useRAWProcessor";
+import { generateRAWThumbnail } from "@/src/lib/rawProcessor";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
 import { savePhotoLocally, getLocalPhotos, initLocalDB } from "@/src/lib/db";
 import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject, getBlob } from "firebase/storage";
@@ -267,6 +269,10 @@ function AppContent() {
   const [photoVersions, setPhotoVersions] = React.useState<PhotoVersion[]>([]);
   const [galleries, setGalleries] = React.useState<ClientGallery[]>([]);
   const [showCRM, setShowCRM] = React.useState(false);
+  
+  // RAW Processing State
+  const { process: processRAW, isProcessing: isProcessingRAW, error: rawError } = useRAWProcessor();
+  const [localRawData, setLocalRawData] = React.useState<Record<string, ImageData>>({});
   
   // Real-time Stats Calcs
   const stats = React.useMemo(() => {
@@ -850,12 +856,48 @@ function AppContent() {
       lastModified: new Date(file.lastModified).toISOString()
     });
 
-    const isRaw = /\.(arw|cr2|nef|dng|orf|raf)$/i.test(file.name);
+    const isRaw = isRawFile(file.name);
     const isImage = /\.(jpg|jpeg|png|webp)$/i.test(file.name);
 
     if (!isRaw && !isImage) {
       toast.error("Formato de archivo no soportado. Usa JPG, PNG o formatos RAW (ARW, CR2, etc.)");
       return;
+    }
+
+    if (isRaw) {
+      try {
+        const result = await processRAW(file);
+        const thumbnailUrl = await generateRAWThumbnail(result.imageData);
+        
+        // For RAW, we only save metadata and thumbnail to Firestore
+        // The RAW image data stays in memory (localRawData)
+        const photoData = {
+          userId: user.uid,
+          url: "raw://" + file.name, // Local identifier
+          thumbnailUrl: thumbnailUrl,
+          title: file.name,
+          description: `RAW info: ${result.metadata.camera}`,
+          settings: { ...DEFAULT_SETTINGS },
+          createdAt: serverTimestamp(),
+          isPublic: false,
+          size: file.size,
+          storagePath: null,
+          folderId: selectedFolderId || null
+        };
+
+        const docRef = await addDoc(collection(db, "photos"), photoData);
+        setLocalRawData(prev => ({ ...prev, [docRef.id]: result.imageData }));
+        
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setSelectedPhotoId(docRef.id);
+        setActiveTab('editor');
+        toast.success("Foto RAW procesada localmente");
+        return;
+      } catch (error: any) {
+        console.error("RAW Processing failed:", error);
+        toast.error(`Error al procesar RAW: ${error.message}`);
+        return;
+      }
     }
 
     setIsUploading(true);
@@ -939,11 +981,16 @@ function AppContent() {
 
   // Reset preview settings when photo changes
   React.useEffect(() => {
+    setPreviewSettings(null); // Clear first to force hard reset
     if (selectedPhoto) {
-      setPreviewSettings(selectedPhoto.settings);
-    } else {
-      setPreviewSettings(null);
+      setTimeout(() => setPreviewSettings(selectedPhoto.settings), 0);
     }
+    
+    // Reset zoom/pan when changing photo
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    setIsCropping(false);
+    setIsComparing(false);
   }, [selectedPhotoId]);
 
   const updatePhotoSettings = React.useCallback((id: string, updates: Partial<LightingSettings>) => {
@@ -1438,7 +1485,7 @@ function AppContent() {
       
       // Get the image data
       let blob: Blob;
-      const isRaw = /\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url);
+      const isRaw = isRawFile(photo.url);
       const targetUrl = isRaw && photo.thumbnailUrl ? photo.thumbnailUrl : photo.url;
       
       if (photo.storagePath && !isRaw) {
@@ -1667,7 +1714,7 @@ function AppContent() {
     const toastId = toast.loading("Analizando imagen con Gemini...");
 
     try {
-      const isRaw = /\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url);
+      const isRaw = isRawFile(photo.url);
       const targetUrl = isRaw && photo.thumbnailUrl ? photo.thumbnailUrl : photo.url;
       
       console.log(`Fetching image for AI analysis (${isRaw ? 'RAW Proxy' : 'Original'}):`, targetUrl);
@@ -1765,17 +1812,18 @@ function AppContent() {
     if (!selectedPhoto) return;
     
     const canvas = document.createElement('canvas');
-    const img = new Image();
-    img.crossOrigin = "anonymous";
+    const imageData = localRawData[selectedPhoto.id];
     
     toast.promise(new Promise(async (resolve, reject) => {
-      img.onload = async () => {
+      const processDownload = async (source: HTMLImageElement | ImageData) => {
         const s = selectedPhoto.settings;
+        const width = source.width;
+        const height = source.height;
         
         // Calculate dimensions based on any rotation angle
         const angleRad = (s.rotation * Math.PI) / 180;
-        const baseWidth = Math.abs(img.width * Math.cos(angleRad)) + Math.abs(img.height * Math.sin(angleRad));
-        const baseHeight = Math.abs(img.width * Math.sin(angleRad)) + Math.abs(img.height * Math.cos(angleRad));
+        const baseWidth = Math.abs(width * Math.cos(angleRad)) + Math.abs(height * Math.sin(angleRad));
+        const baseHeight = Math.abs(width * Math.sin(angleRad)) + Math.abs(height * Math.cos(angleRad));
         
         const exportWidth = baseWidth * settings.scale;
         const exportHeight = baseHeight * settings.scale;
@@ -1791,7 +1839,7 @@ function AppContent() {
         const finalWidth = baseWidth * finalScale;
         const finalHeight = baseHeight * finalScale;
 
-        await renderImageToCanvas(canvas, img, s, {
+        await renderImageToCanvas(canvas, source, s, {
           width: finalWidth,
           height: finalHeight
         });
@@ -1813,9 +1861,16 @@ function AppContent() {
           resolve(true);
         }, settings.format, settings.quality);
       };
-      img.onerror = reject;
-      // Issue 2.7 fix: Use fixImageUrl
-      img.src = fixImageUrl(selectedPhoto.url);
+
+      if (imageData) {
+        await processDownload(imageData);
+      } else {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => processDownload(img);
+        img.onerror = reject;
+        img.src = fixImageUrl(selectedPhoto.url);
+      }
     }), {
       loading: 'Preparando descarga...',
       success: 'Imagen descargada con éxito',
@@ -2582,7 +2637,7 @@ function AppContent() {
                                   </div>
                                 </div>
 
-                                {(photo.thumbnailUrl && !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.thumbnailUrl)) || !/\.(arw|cr2|nef|dng|orf|raf)$/i.test(photo.url) ? (
+                                {(photo.thumbnailUrl && !isRawFile(photo.thumbnailUrl)) || !isRawFile(photo.url) ? (
                                   <img 
                                     src={fixImageUrl(photo.thumbnailUrl || photo.url)} 
                                     alt={photo.title}
@@ -3285,7 +3340,7 @@ function AppContent() {
                       <p className="text-zinc-500">Selecciona una foto de tu galería.</p>
                     </div>
                   ) : (
-                      <AnimatePresence>
+                      <AnimatePresence mode="wait">
                         <motion.div 
                           key={selectedPhoto.id}
                           initial={{ opacity: 0 }}
@@ -3298,7 +3353,16 @@ function AppContent() {
                             transition: 'none'
                           }}
                         >
-                           {/\.(arw|cr2|nef|dng|orf|raf)$/i.test(selectedPhoto.url) && (!selectedPhoto.thumbnailUrl || selectedPhoto.thumbnailUrl === selectedPhoto.url) ? (
+                        <div className="relative w-full h-full flex items-center justify-center">
+                            {isProcessingRAW && (
+                              <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md">
+                                <div className="w-16 h-16 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4" />
+                                <p className="text-white font-bold tracking-widest uppercase text-xs">Procesando RAW...</p>
+                                <p className="text-zinc-500 text-[10px] mt-2">Este proceso puede tardar unos segundos</p>
+                              </div>
+                            )}
+
+                            {isRawFile(selectedPhoto.url) && (!selectedPhoto.thumbnailUrl || selectedPhoto.thumbnailUrl === selectedPhoto.url) ? (
                            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-900/50 p-12 rounded-2xl border border-zinc-800 backdrop-blur-xl">
                              <ImageIcon className="w-20 h-20 mb-6 opacity-20" />
                              <h3 className="text-xl font-bold text-white mb-2">Procesando RAW...</h3>
@@ -3313,13 +3377,16 @@ function AppContent() {
                          ) : (
                            <PhotoCanvas 
                              ref={imageRef}
-                             imageUrl={fixImageUrl((selectedPhoto.thumbnailUrl && selectedPhoto.thumbnailUrl !== selectedPhoto.url) ? selectedPhoto.thumbnailUrl : selectedPhoto.url)}
+                             imageUrl={fixImageUrl((isRawFile(selectedPhoto.url) && selectedPhoto.thumbnailUrl) ? selectedPhoto.thumbnailUrl : selectedPhoto.url)}
+                             imageData={localRawData[selectedPhoto.id]}
                              settings={previewSettings || selectedPhoto.settings}
                              isComparing={isComparing}
                              compareValue={compareValue}
+                             className="w-full h-full"
                              onHistogramData={handleHistogramData}
                            />
                          )}
+                        </div>
 
 
         {/* Crop Overlay */}
@@ -3414,7 +3481,7 @@ function AppContent() {
                               </h4>
                               <Histogram 
                                 settings={previewSettings || selectedPhoto.settings} 
-                                imageUrl={fixImageUrl(selectedPhoto.thumbnailUrl || selectedPhoto.url)} 
+                                imageUrl={fixImageUrl((isRawFile(selectedPhoto.url) && selectedPhoto.thumbnailUrl) ? selectedPhoto.thumbnailUrl : selectedPhoto.url)} 
                                 pixelData={histogramPixels}
                               />
                             </div>
@@ -3447,6 +3514,7 @@ function AppContent() {
 
                               {/* Main Controls */}
                               <LightingControls 
+                                key={selectedPhoto.id}
                                 settings={previewSettings || selectedPhoto.settings} 
                                 onChange={handleEditorChange}
                                 onPreviewChange={handleEditorPreview}
@@ -3517,7 +3585,7 @@ function AppContent() {
               </div>
               <div className="p-4 rounded-xl bg-zinc-900/50 border border-zinc-800 space-y-1">
                 <p className="text-[10px] text-zinc-500 font-bold uppercase">Archivos RAW</p>
-                <p className="text-lg font-bold">{photos.filter(p => /\.(arw|cr2|nef|dng|orf|raf)$/i.test(p.url)).length}</p>
+                <p className="text-lg font-bold">{photos.filter(p => isRawFile(p.url)).length}</p>
               </div>
             </div>
 

@@ -27,12 +27,13 @@ function ColorWheel({ label, value, onChange, onCommit }: ColorWheelProps) {
     const distance = Math.sqrt(dx * dx + dy * dy);
     const radius = rect.width / 2;
     
-    let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    let angle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
     if (angle < 0) angle += 360;
+    if (angle >= 360) angle -= 360;
     
     const saturation = Math.min(100, (distance / radius) * 100);
     
-    if (distance <= radius || isDragging) {
+    if (distance <= radius * 1.1 || isDragging) {
       const safeAngle = typeof angle === 'number' ? angle : 0;
       const safeSaturation = typeof saturation === 'number' ? saturation : 0;
       const newValue = `hsla(${safeAngle.toFixed(0)}, ${safeSaturation.toFixed(0)}%, 50%, 0.5)`;

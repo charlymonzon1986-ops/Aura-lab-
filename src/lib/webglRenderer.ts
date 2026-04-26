@@ -2,7 +2,7 @@ import { VERTEX_SHADER, FRAGMENT_SHADER } from "./shaders";
 import { LightingSettings } from "../types";
 
 export class WebGLRenderer {
-  private gl: WebGLRenderingContext;
+  private gl: WebGLRenderingContext | WebGL2RenderingContext;
   private program: WebGLProgram;
   private texture: WebGLTexture | null = null;
   private positionBuffer: WebGLBuffer | null = null;
@@ -12,14 +12,24 @@ export class WebGLRenderer {
   private analysisTexture: WebGLTexture | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
-    const gl = canvas.getContext("webgl", { 
+    const gl = canvas.getContext("webgl2", { 
+      preserveDrawingBuffer: true,
+      antialias: true,
+      alpha: true
+    }) || canvas.getContext("webgl", { 
       preserveDrawingBuffer: true,
       antialias: true,
       alpha: true
     });
     if (!gl) throw new Error("WebGL not supported");
-    this.gl = gl;
-    this.program = this.createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
+    this.gl = gl as WebGLRenderingContext | WebGL2RenderingContext;
+    
+    // Check if we requested WebGL 2 and got it
+    const isWebGL2 = gl instanceof WebGL2RenderingContext;
+    this.program = this.createProgram(
+      VERTEX_SHADER, 
+      isWebGL2 ? FRAGMENT_SHADER : this.convertToWebGL1(FRAGMENT_SHADER)
+    );
     this.initBuffers();
     this.initAnalysisFBO();
   }
@@ -34,6 +44,18 @@ export class WebGLRenderer {
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.analysisFramebuffer);
     this.gl.framebufferTexture2D(this.gl.FRAMEBUFFER, this.gl.COLOR_ATTACHMENT0, this.gl.TEXTURE_2D, this.analysisTexture, 0);
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+  }
+
+  private convertToWebGL1(glsl: string): string {
+    return glsl
+      .replace("#version 300 es", "")
+      .replace(/in vec2/g, "attribute vec2")
+      .replace(/in vec3/g, "attribute vec3")
+      .replace(/out vec4 outColor;/g, "")
+      .replace(/out vec2 v_texCoord;/g, "varying vec2 v_texCoord;")
+      .replace(/in vec2 v_texCoord;/g, "varying vec2 v_texCoord;")
+      .replace(/texture\(/g, "texture2D(")
+      .replace(/outColor =/g, "gl_FragColor =");
   }
 
   private createShader(type: number, source: string): WebGLShader {
@@ -77,9 +99,9 @@ export class WebGLRenderer {
     ]), this.gl.STATIC_DRAW);
   }
 
-  private currentImage: HTMLImageElement | HTMLCanvasElement | null = null;
-
-  public setImage(img: HTMLImageElement | HTMLCanvasElement) {
+  private currentImage: HTMLImageElement | HTMLCanvasElement | ImageData | null = null;
+  
+  public setImage(img: HTMLImageElement | HTMLCanvasElement | ImageData) {
     if (this.currentImage === img) return;
     this.currentImage = img;
 
@@ -94,7 +116,11 @@ export class WebGLRenderer {
     this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR);
     
     try {
-      this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
+      if (img instanceof ImageData) {
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
+      } else {
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
+      }
     } catch (e) {
       console.error("WebGL texImage2D failed:", e);
       throw e;
@@ -149,6 +175,7 @@ export class WebGLRenderer {
     // -- UNIFORMS (Professional Mapping) --
     const s = settings;
     this.setUniform("u_exposure", s.exposure ?? 0);
+    this.setUniform("u_brightness", (s.brightness ?? 100) / 100);
     this.setUniform("u_contrast", (s.contrast ?? 100) / 100);
     this.setUniform("u_temp", (s.warmth ?? 0) / 100);
     this.setUniform("u_tint", (s.tint ?? 0) / 100);
@@ -165,6 +192,10 @@ export class WebGLRenderer {
     this.setUniform("u_grain", (s.grain ?? 0) / 100);
     this.setUniform("u_sepia", (s.sepia ?? 0) / 100);
     this.setUniform("u_sharpening", (s.sharpening ?? 0) / 100);
+    this.setUniform("u_focus", (s.focus ?? 0) / 100);
+    this.setUniform("u_noiseReduction", (s.noiseReduction ?? 0) / 100);
+    this.setUniform("u_blur", (s.blur ?? 0) / 100);
+    this.setUniform("u_distortion", (s.distortion ?? 0) / 100);
     this.setUniform("u_time", performance.now() / 1000);
     this.setUniformVec2("u_resolution", [width, height]);
 
