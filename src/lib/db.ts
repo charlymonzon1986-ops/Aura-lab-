@@ -1,5 +1,20 @@
 // Using global initSqlJs from index.html script tag
 let db: any = null;
+let SQL_MODULE: any = null;
+
+export async function getSQL() {
+  if (SQL_MODULE) return SQL_MODULE;
+  
+  const initSqlJsGlobal = (window as any).initSqlJs;
+  if (!initSqlJsGlobal) {
+    throw new Error("sql.js not loaded from script tag");
+  }
+
+  SQL_MODULE = await initSqlJsGlobal({
+    locateFile: (file: string) => `/sql/${file}`
+  });
+  return SQL_MODULE;
+}
 
 // IndexedDB Helper
 const DB_NAME = 'aura_lab_db';
@@ -44,14 +59,7 @@ export async function initLocalDB() {
   
   let SQL;
   try {
-    const initSqlJsGlobal = (window as any).initSqlJs;
-    if (!initSqlJsGlobal) {
-      throw new Error("sql.js not loaded from script tag");
-    }
-
-    SQL = await initSqlJsGlobal({
-      locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`
-    });
+    SQL = await getSQL();
   } catch (err) {
     console.error("❌ Error initializing sql.js:", err);
     // Return a mock DB that doesn't crash but logs errors

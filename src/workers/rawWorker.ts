@@ -54,7 +54,7 @@ ctx.onmessage = async (e: MessageEvent<ArrayBuffer>) => {
 
     // Get the processed image
     const processedImage = instance.make_mem_image();
-    const { width, height, colors, data } = processedImage;
+    const { width, height, data } = processedImage;
 
     // Convert to RGBA for ImageData (LibRaw returns RGB)
     const pixelCount = width * height;
@@ -77,8 +77,8 @@ ctx.onmessage = async (e: MessageEvent<ArrayBuffer>) => {
     };
 
     // Clean up
-    instance.recycle();
     instance.free_mem_image(processedImage);
+    instance.recycle();
 
     ctx.postMessage({
       type: 'SUCCESS',

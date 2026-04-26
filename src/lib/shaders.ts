@@ -79,12 +79,11 @@ export const FRAGMENT_SHADER = `#version 300 es
 
   // Stable Contrast (S-Curve)
   vec3 applyContrast(vec3 color, float contrast) {
-    if (abs(contrast - 1.0) < 0.01) return color;
+    if (abs(contrast - 100.0) < 0.1) return color;
     // We use a mid-point centered S-curve for professional look
-    // This is safer than the sigmoid exponential formula
-    float k = (contrast - 1.0) * 0.5;
+    float k = (contrast / 100.0) - 1.0;
     vec3 c = color;
-    return mix(c, smoothstep(0.0, 1.0, c), k + 0.5);
+    return mix(c, smoothstep(0.0, 1.0, c), k * 0.5 + 0.0); // If k is 0, mix is (c, s, 0) which is c. Correct.
   }
 
   // Better Saturation (Luminance preserving)
@@ -161,7 +160,10 @@ export const FRAGMENT_SHADER = `#version 300 es
     color.r *= (1.0 + t);
     color.b *= (1.0 - t);
     color.g *= (1.0 - ti);
-    color.rb *= (1.0 + ti * 0.4);
+    // Fix: rb swizzle assignment is not safe in all versions
+    float tintBoost = (1.0 + ti * 0.4);
+    color.r *= tintBoost;
+    color.b *= tintBoost;
     color = max(color, 0.0);
 
     // -- 6. Basics: Highlights/Shadows/Whites/Blacks --

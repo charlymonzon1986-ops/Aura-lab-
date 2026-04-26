@@ -11,7 +11,6 @@ import {
 import { LightingSettings, PlanType, DEFAULT_SETTINGS } from "@/src/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getFilterString } from "@/src/lib/imageProcessing";
 
 interface LightingControlsProps {
   settings: LightingSettings;

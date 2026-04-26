@@ -366,6 +366,10 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
     
     return () => {
       if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
+      if (rendererRef.current) {
+        rendererRef.current.destroy();
+        rendererRef.current = null;
+      }
     };
   }, [source, settings, isComparing, compareValue, containerSize, onHistogramData]);
 

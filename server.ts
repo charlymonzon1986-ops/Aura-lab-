@@ -18,7 +18,6 @@ if (process.env.K_SERVICE) {
 
 import { exiftool } from "exiftool-vendored";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
-import { Resend } from 'resend';
 import B2Package from 'backblaze-b2';
 // Handle ESM/CJS import differences
 const B2 = (B2Package as any).default || B2Package;
@@ -26,11 +25,19 @@ import archiver from 'archiver';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 import os from 'os';
+import crypto from 'crypto';
+import { GoogleGenAI } from "@google/genai";
 
 // 1. Core configuration
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const isProd = process.env.NODE_ENV === "production";
 const isCloudRun = !!process.env.K_SERVICE;
+
+const STORAGE_LIMITS: Record<string, number> = {
+  'free': 2 * 1024 * 1024 * 1024, // 2GB
+  'pro': 100 * 1024 * 1024 * 1024, // 100GB
+  'enterprise': 1024 * 1024 * 1024 * 1024 // 1TB
+};
 
 console.log(`🌍 Environment: NODE_ENV=${process.env.NODE_ENV}, K_SERVICE=${process.env.K_SERVICE}`);
 console.log(`🚀 isProd: ${isProd}, isCloudRun: ${isCloudRun}`);
@@ -84,19 +91,23 @@ async function startServer() {
   app.get("/health", (req, res) => res.status(200).send("OK"));
 
   // Middlewares
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({ 
+    limit: '50mb',
+    verify: (req: any, res, buf) => {
+      req.rawBody = buf;
+    }
+  }));
   
   // Restricted CORS
   const allowedOrigins = [
     process.env.APP_URL,
-    'http://localhost:3000',
-    'https://ais-dev-dzoo7j464lydyn4jz4bkge-351091137310.us-east1.run.app',
-    'https://ais-pre-dzoo7j464lydyn4jz4bkge-351091137310.us-east1.run.app'
+    'http://localhost:3000'
   ].filter(Boolean) as string[];
 
   app.use(cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.run.app')) {
+      // Allow AI Studio previews and local dev
+      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.run.app') || origin.endsWith('.web.app')) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
@@ -330,19 +341,6 @@ async function startServer() {
     return mpClient;
   }
 
-  let resendClient: Resend | null = null;
-  function getResend() {
-    if (!resendClient) {
-      const key = process.env.RESEND_API_KEY;
-      if (!key) {
-        console.warn("⚠️ RESEND_API_KEY is not defined. Email features will fail.");
-        return null;
-      }
-      resendClient = new Resend(key);
-    }
-    return resendClient;
-  }
-
   app.get("/api/admin/config-check", authenticate, async (req: any, res) => {
     try {
       const userDoc = await fsDb.collection("users").doc(req.user.uid).get();
@@ -362,7 +360,46 @@ async function startServer() {
     }
   });
 
-  // REMOVED INSECURE ENDPOINT /api/config/gemini
+  // AI Endpoints
+  const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+
+  app.post("/api/ai/analyze", authenticate, async (req: any, res) => {
+    try {
+      const { imageData, mimeType, prompt } = req.body;
+      const response = await genAI.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: {
+          parts: [
+            { text: prompt },
+            { inlineData: { data: imageData, mimeType } }
+          ]
+        }
+      });
+      res.json({ text: response.text });
+    } catch (err) {
+      console.error("AI Analyze Error:", err);
+      res.status(500).json({ error: "AI Analysis failed" });
+    }
+  });
+
+  app.post("/api/ai/enhance", authenticate, async (req: any, res) => {
+    try {
+      const { imageData, mimeType, prompt } = req.body;
+      const response = await genAI.models.generateContent({
+        model: "gemini-2.5-flash-preview-04-17",
+        contents: {
+          parts: [
+            { text: prompt },
+            { inlineData: { data: imageData, mimeType } }
+          ]
+        }
+      });
+      res.json({ text: response.text });
+    } catch (err) {
+      console.error("AI Enhance Error:", err);
+      res.status(500).json({ error: "AI Enhancement failed" });
+    }
+  });
 
   app.post("/api/create-preference", authenticate, async (req: any, res) => {
     try {
@@ -397,13 +434,28 @@ async function startServer() {
     }
   });
 
-  app.post("/api/webhook/mercadopago", async (req, res) => {
+  app.post("/api/webhook/mercadopago", async (req: any, res) => {
     try {
+      const signature = req.headers['x-signature'] as string;
+      const secret = process.env.MERCADOPAGO_WEBHOOK_SECRET;
+
+      if (secret && signature) {
+        const hmac = crypto.createHmac('sha256', secret);
+        hmac.update(req.rawBody);
+        const digest = hmac.digest('hex');
+
+        const signatureBuffer = Buffer.from(signature);
+        const digestBuffer = Buffer.from(digest);
+
+        if (signatureBuffer.length !== digestBuffer.length || !crypto.timingSafeEqual(signatureBuffer, digestBuffer)) {
+          console.error("❌ MP Webhook Signature mismatch");
+          return res.status(401).send("Unauthorized");
+        }
+      } else if (isProd) {
+        return res.status(401).json({ error: "Missing webhook secret or signature" });
+      }
+
       const { action, data } = req.body;
-      
-      // Note: Real signature verification would require a secret key (MERCADOPAGO_WEB_HOOK_SECRET)
-      // and checking the x-signature header using crypto.
-      
       if (action === "payment.created" || req.query.topic === "payment") {
         const paymentId = data?.id || req.query.id;
         const response = await axios.get(`https://api.mercadopago.com/v1/payments/${paymentId}`, { 
@@ -412,10 +464,11 @@ async function startServer() {
         const p = response.data;
         if (p.status === "approved") {
           const userId = p.external_reference;
-          const plan = (p.additional_info?.items?.[0]?.id || p.description?.split('Plan ')[1] || 'free').toLowerCase();
+          const rawPlan = (p.additional_info?.items?.[0]?.id || p.description?.split('Plan ')[1] || 'free').toLowerCase();
           
-          // Verify that the payment actually matches what we expect (amount etc)
-          // ...
+          // Bug 9 Fix: Validate plan value
+          const validPlans = ['free', 'pro', 'studio', 'enterprise'];
+          const plan = validPlans.includes(rawPlan) ? rawPlan : 'free';
           
           await fsDb.collection("users").doc(userId).update({ 
             plan, 
@@ -608,6 +661,18 @@ async function startServer() {
       const { file } = req;
       const userId = req.user.uid;
       if (!file || !userId) return res.status(400).send("Missing info");
+
+      // Check storage limits
+      const userDoc = await fsDb.collection("users").doc(userId).get();
+      const userData = userDoc.data() || { plan: 'free', storageUsed: 0 };
+      const plan = userData.plan || 'free';
+      const storageUsed = userData.storageUsed || 0;
+      const limit = STORAGE_LIMITS[plan] || STORAGE_LIMITS['free'];
+
+      if (storageUsed + file.size > limit) {
+        return res.status(403).json({ error: "Storage limit exceeded" });
+      }
+
       const ts = Date.now();
       const name = `${ts}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, "_")}`;
       const url = await uploadToB2(file.buffer, name, file.mimetype);
@@ -670,9 +735,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`✅ Server listening on port ${PORT} [${isProd ? 'production' : 'development'}]`);
   });
+
+  const gracefulShutdown = async () => {
+    console.log("🛑 Graceful shutdown initiated...");
+    await exiftool.end();
+    server.close(() => {
+      console.log("👋 Server closed.");
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', gracefulShutdown);
+  process.on('SIGINT', gracefulShutdown);
 }
 
 startServer().catch(err => {

@@ -1,5 +1,4 @@
 import React from "react";
-import EXIF from "exif-js";
 import { analyzePhoto as analyzePhotoAI, smartEnhance as smartEnhanceAI } from "./services/geminiService";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -17,7 +16,6 @@ import {
   FolderPlus,
   FileJson,
   Plus,
-  HardDrive as HardDriveIcon,
   Image as ImageIcon, 
   Sun, 
   Maximize2, 
@@ -44,7 +42,6 @@ import {
   CreditCard,
   CheckCircle2,
   RotateCw,
-  Trash2 as TrashIcon,
   ClipboardPaste,
   Star,
   Users,
@@ -92,7 +89,7 @@ import { getFilterString, fixImageUrl, isRawFile } from "@/src/lib/imageProcessi
 import { useRAWProcessor } from "@/src/hooks/useRAWProcessor";
 import { generateRAWThumbnail } from "@/src/lib/rawProcessor";
 import { auth, db, storage, signInWithGoogle, logout } from "@/src/firebase";
-import { savePhotoLocally, getLocalPhotos, initLocalDB } from "@/src/lib/db";
+import { savePhotoLocally, getLocalPhotos, initLocalDB, getSQL } from "@/src/lib/db";
 import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject, getBlob } from "firebase/storage";
 import { 
   collection, 
@@ -408,30 +405,17 @@ function AppContent() {
           
           const userDoc = await getDoc(userDocRef);
           
-          const ADMIN_LIST = [
-            'charlymonzon.1986@gmail.com',
-            'juanomonzon@gmail.com',
-            'ruth1094@gmail.com'
-          ];
-          const isAdminEmail = currentUser.email && ADMIN_LIST.includes(currentUser.email.toLowerCase());
-
           if (!userDoc.exists()) {
             const profile: UserProfile = {
               uid: currentUser.uid,
               email: currentUser.email || "",
               displayName: currentUser.displayName || "Usuario",
-              role: isAdminEmail ? "admin" : "user",
-              plan: isAdminEmail ? "pro" : "free",
+              role: "user",
+              plan: "free",
               storageUsed: 0,
               createdAt: new Date().toISOString()
             };
             await setDoc(userDocRef, profile);
-          } else {
-            const data = userDoc.data() as UserProfile;
-            // Auto-promote existing users if they are on the list but not admins yet
-            if (isAdminEmail && data.role !== 'admin') {
-              await updateDoc(userDocRef, { role: 'admin', plan: 'pro' });
-            }
           }
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, "users/" + (currentUser?.uid || "unknown"));
@@ -1432,16 +1416,8 @@ function AppContent() {
     try {
       toast.loading("Leyendo catálogo de Lightroom...", { id: "lrcat-import" });
       
-      // Load sql.js
-      const initSqlJsGlobal = (window as any).initSqlJs;
-      if (!initSqlJsGlobal) {
-        toast.error("sql.js no se ha cargado correctamente.");
-        return;
-      }
-
-      const SQL = await initSqlJsGlobal({
-        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/${file}`
-      });
+      // Load shared sql.js
+      const SQL = await getSQL();
 
       const arrayBuffer = await file.arrayBuffer();
       const lrcatDb = new SQL.Database(new Uint8Array(arrayBuffer));
@@ -2121,7 +2097,7 @@ function AppContent() {
             <Button 
               variant="link" 
               className="h-auto p-0 text-[10px] text-zinc-300 underline font-bold"
-              onClick={() => window.open('https://github.com/charlymonzon/aura-lab/actions', '_blank')}
+              onClick={() => window.open('https://github.com/charlymonzon/aura-lab', '_blank')}
             >
               Descargar Actualización
             </Button>

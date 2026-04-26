@@ -50,7 +50,13 @@ export async function processRAWFile(file: File): Promise<RAWProcessResult> {
       { type: 'module' }
     );
 
+    const timeoutId = setTimeout(() => {
+      reject(new RAWProcessingError('WASM_LOAD_FAILED', 'Timeout: RAW processing exceeded 30s'));
+      worker.terminate();
+    }, 30000);
+
     worker.onmessage = (e: MessageEvent<any>) => {
+      clearTimeout(timeoutId);
       const response = e.data;
       if (response.type === 'SUCCESS') {
         const { pixelData, width, height, metadata } = response.payload;
@@ -71,6 +77,7 @@ export async function processRAWFile(file: File): Promise<RAWProcessResult> {
     };
 
     worker.onerror = (err) => {
+      clearTimeout(timeoutId);
       reject(new RAWProcessingError('WASM_LOAD_FAILED', `Worker error: ${err.message}`));
       worker.terminate();
     };
