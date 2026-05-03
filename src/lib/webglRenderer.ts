@@ -11,6 +11,10 @@ export class WebGLRenderer {
   private analysisFramebuffer: WebGLFramebuffer | null = null;
   private analysisTexture: WebGLTexture | null = null;
 
+  // Cache uniform locations — getUniformLocation is a slow GPU↔CPU round-trip.
+  // Looked up once after program link; reused every frame.
+  private uniformCache: Map<string, WebGLUniformLocation | null> = new Map();
+
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", { 
       preserveDrawingBuffer: true,
@@ -27,11 +31,27 @@ export class WebGLRenderer {
     // Check if we requested WebGL 2 and got it
     const isWebGL2 = gl instanceof WebGL2RenderingContext;
     this.program = this.createProgram(
-      VERTEX_SHADER, 
+      isWebGL2 ? VERTEX_SHADER : this.convertToWebGL1(VERTEX_SHADER), 
       isWebGL2 ? FRAGMENT_SHADER : this.convertToWebGL1(FRAGMENT_SHADER)
     );
     this.initBuffers();
     this.initAnalysisFBO();
+    this.buildUniformCache();
+  }
+
+  // Build the cache once — call this right after program link.
+  private buildUniformCache() {
+    const uniforms = [
+      "u_image","u_exposure","u_brightness","u_contrast","u_temp","u_tint",
+      "u_highlights","u_shadows","u_whites","u_blacks","u_saturation","u_vibrance",
+      "u_clarity","u_texture","u_dehaze","u_vignette","u_grain","u_sepia",
+      "u_sharpening","u_focus","u_noiseReduction","u_blur","u_distortion",
+      "u_time","u_resolution","u_shadowTint","u_midtoneTint","u_highlightTint","u_balance"
+    ];
+    for (const name of uniforms) {
+      const loc = this.gl.getUniformLocation(this.program, name);
+      if (loc) this.uniformCache.set(name, loc);
+    }
   }
 
   private initAnalysisFBO() {
@@ -48,14 +68,14 @@ export class WebGLRenderer {
 
   private convertToWebGL1(glsl: string): string {
     return glsl
-      .replace("#version 300 es", "")
-      .replace(/in vec2/g, "attribute vec2")
-      .replace(/in vec3/g, "attribute vec3")
-      .replace(/out vec4 outColor;/g, "")
-      .replace(/out vec2 v_texCoord;/g, "varying vec2 v_texCoord;")
-      .replace(/in vec2 v_texCoord;/g, "varying vec2 v_texCoord;")
-      .replace(/texture\(/g, "texture2D(")
-      .replace(/outColor =/g, "gl_FragColor =");
+      .replace(/#version\s+300\s+es/g, "")
+      .replace(/\bin\s+/g, "attribute ")
+      .replace(/\bout\s+vec2\s+v_texCoord/g, "varying vec2 v_texCoord")
+      .replace(/\bin\s+vec2\s+v_texCoord/g, "varying vec2 v_texCoord")
+      .replace(/\bout\s+vec4\s+outColor\s*;/g, "")
+      .replace(/\btexture\s*\(/g, "texture2D(")
+      .replace(/\boutColor\s*=/g, "gl_FragColor =")
+      .trim();
   }
 
   private createShader(type: number, source: string): WebGLShader {
@@ -139,8 +159,8 @@ export class WebGLRenderer {
     // Bind texture to unit 0
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
-    const imageLoc = this.gl.getUniformLocation(this.program, "u_image");
-    this.gl.uniform1i(imageLoc, 0);
+    const imageLoc = this.uniformCache.get("u_image") ?? null;
+    if (imageLoc !== null) this.gl.uniform1i(imageLoc, 0);
 
     // Attributes
     const posLoc = this.gl.getAttribLocation(this.program, "a_position");
@@ -245,18 +265,18 @@ export class WebGLRenderer {
   }
 
   private setUniform(name: string, value: number) {
-    const loc = this.gl.getUniformLocation(this.program, name);
-    this.gl.uniform1f(loc, value);
+    const loc = this.uniformCache.get(name) ?? null;
+    if (loc !== null) this.gl.uniform1f(loc, value);
   }
 
   private setUniformVec2(name: string, value: [number, number]) {
-    const loc = this.gl.getUniformLocation(this.program, name);
-    this.gl.uniform2fv(loc, value);
+    const loc = this.uniformCache.get(name) ?? null;
+    if (loc !== null) this.gl.uniform2fv(loc, value);
   }
 
   private setUniformVec3(name: string, value: [number, number, number]) {
-    const loc = this.gl.getUniformLocation(this.program, name);
-    this.gl.uniform3fv(loc, value);
+    const loc = this.uniformCache.get(name) ?? null;
+    if (loc !== null) this.gl.uniform3fv(loc, value);
   }
 
   public getPixels(width: number, height: number): Uint8Array {

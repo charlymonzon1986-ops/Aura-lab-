@@ -70,20 +70,26 @@ export const FRAGMENT_SHADER = `#version 300 es
   }
 
   // Stable Tone Mapping (Lightroom-style soft shoulder)
-  // Prevents "Broken/Psychedelic" colors when values exceed 1.0
   vec3 toneMap(vec3 x) {
-    // A professional "Soft-Knee" tone mapper with high dynamic range support
-    float white = 8.0; 
+    float white = 4.0; 
     return (x * (1.0 + x / (white * white))) / (1.0 + x);
   }
 
-  // Stable Contrast (S-Curve)
+  // Stable Contrast (Proper slope around 0.5)
+  // Contrast input is 0.0 to 2.0 (where 1.0 is neutral)
   vec3 applyContrast(vec3 color, float contrast) {
-    if (abs(contrast - 100.0) < 0.1) return color;
-    // We use a mid-point centered S-curve for professional look
-    float k = (contrast / 100.0) - 1.0;
-    vec3 c = color;
-    return mix(c, smoothstep(0.0, 1.0, c), k * 0.5 + 0.0); // If k is 0, mix is (c, s, 0) which is c. Correct.
+    if (abs(contrast - 1.0) < 0.001) return color;
+    
+    // Use a logarithmic slope for natural response
+    float slope = contrast;
+    if (contrast < 1.0) {
+        // Handle reduction smoothly
+        return (color - 0.5) * slope + 0.5;
+    }
+    
+    // S-Curve for boost
+    vec3 c = clamp(color, 0.0, 1.0);
+    return mix(c, smoothstep(0.0, 1.0, c), (slope - 1.0) * 0.8);
   }
 
   // Better Saturation (Luminance preserving)
@@ -92,16 +98,18 @@ export const FRAGMENT_SHADER = `#version 300 es
     return mix(vec3(luma), color, sat);
   }
 
-  // HSL-based Vibrance (Smart saturation)
+  // HSL-aware Vibrance
   vec3 applyVibrance(vec3 color, float vib) {
-    if (abs(vib) < 0.01) return color;
-    float maxCol = max(color.r, max(color.g, color.b));
-    float minCol = min(color.r, min(color.g, color.b));
-    float sat = (maxCol - minCol) / (maxCol + 1e-6);
+    if (abs(vib - 1.0) < 0.01) return color;
     
-    // Targeted saturation for low-sat pixels
-    float amt = vib * (1.0 - sat) * 0.5;
-    return color * (1.0 + amt);
+    float mx = max(color.r, max(color.g, color.b));
+    float mn = min(color.r, min(color.g, color.b));
+    float sat = (mx - mn) / (mx + 1e-6);
+    float luma = getLuma(color);
+    
+    // Scale boost based on current saturation (lower sat gets more boost)
+    float sat_factor = 1.0 + (vib - 1.0) * (1.0 - sat);
+    return mix(vec3(luma), color, sat_factor);
   }
 
   // Split Toning
@@ -112,9 +120,10 @@ export const FRAGMENT_SHADER = `#version 300 es
     float hMask = smoothstep(0.4 + balance * 0.3, 0.9 + balance * 0.3, luma);
     float mMask = clamp(1.0 - sMask - hMask, 0.0, 1.0);
     
-    color += sTint * sMask * 0.25;
-    color += mTint * mMask * 0.15;
-    color += hTint * hMask * 0.1;
+    // In Linear space tints should be additive to luminance or mixed
+    color += sTint * sMask * 0.15;
+    color += mTint * mMask * 0.08;
+    color += hTint * hMask * 0.05;
     
     return color;
   }
@@ -135,64 +144,102 @@ export const FRAGMENT_SHADER = `#version 300 es
     vec4 tex = texture(u_image, uv);
     vec3 color = tex.rgb;
 
-    // -- 2. Noise Reduction & Blur (Spatial filters) --
-    if (u_blur > 0.01 || u_noiseReduction > 0.01) {
-        float blurRadius = (u_blur * 5.0 + u_noiseReduction * 2.0) / u_resolution.x;
-        vec3 blurred = color * 0.4;
-        blurred += texture(u_image, uv + vec2(blurRadius, 0.0)).rgb * 0.15;
-        blurred += texture(u_image, uv - vec2(blurRadius, 0.0)).rgb * 0.15;
-        blurred += texture(u_image, uv + vec2(0.0, blurRadius)).rgb * 0.15;
-        blurred += texture(u_image, uv - vec2(0.0, blurRadius)).rgb * 0.15;
-        color = mix(color, blurred, clamp(u_blur * 0.5 + u_noiseReduction * 0.8, 0.0, 1.0));
-    }
-
-    // -- 3. Linearize (Safe version) --
+    // -- 2. Linearize (Moved up to process everything in linear space) --
     color = toLinear(color);
 
-    // -- 4. Exposure & Brightness (In Linear space) --
+    // -- 3. Noise Reduction & Blur (Independent) --
+    if (u_blur > 0.01) {
+        vec2 blurRadius = (u_blur * 8.0) / u_resolution;
+        vec3 blurred = color * 0.2;
+        blurred += toLinear(texture(u_image, uv + vec2(blurRadius.x, 0.0)).rgb) * 0.2;
+        blurred += toLinear(texture(u_image, uv - vec2(blurRadius.x, 0.0)).rgb) * 0.2;
+        blurred += toLinear(texture(u_image, uv + vec2(0.0, blurRadius.y)).rgb) * 0.2;
+        blurred += toLinear(texture(u_image, uv - vec2(0.0, blurRadius.y)).rgb) * 0.2;
+        color = mix(color, blurred, clamp(u_blur * 0.85, 0.0, 1.0)); 
+    }
+    if (u_noiseReduction > 0.01) {
+        vec2 nrRadius = (u_noiseReduction * 3.0) / u_resolution;
+        vec3 nrBlurred = color * 0.2;
+        nrBlurred += toLinear(texture(u_image, uv + vec2(nrRadius.x, 0.0)).rgb) * 0.2;
+        nrBlurred += toLinear(texture(u_image, uv - vec2(nrRadius.x, 0.0)).rgb) * 0.2;
+        nrBlurred += toLinear(texture(u_image, uv + vec2(0.0, nrRadius.y)).rgb) * 0.2;
+        nrBlurred += toLinear(texture(u_image, uv - vec2(0.0, nrRadius.y)).rgb) * 0.2;
+        color = mix(color, nrBlurred, clamp(u_noiseReduction * 0.7, 0.0, 1.0)); 
+    }
+
+    // -- 4. Exposure & Brightness --
     color *= pow(2.0, clamp(u_exposure, -5.0, 5.0));
     color *= u_brightness;
     color = max(color, 0.0);
 
-    // -- 5. White Balance --
-    float t = u_temp * 0.1;
-    float ti = u_tint * 0.05;
-    color.r *= (1.0 + t);
-    color.b *= (1.0 - t);
-    color.g *= (1.0 - ti);
-    // Fix: rb swizzle assignment is not safe in all versions
-    float tintBoost = (1.0 + ti * 0.4);
-    color.r *= tintBoost;
-    color.b *= tintBoost;
+    // -- 5. White Balance (Orthogonal Temp/Tint) --
+    float t = u_temp * 0.35; 
+    float ti = u_tint * 0.2;
+    
+    // Calculate final factors to avoid compounding
+    vec3 wbFactors = vec3(
+        (1.0 + t) * (1.0 + ti * 0.2), 
+        (1.0 - ti), 
+        (1.0 - t) * (1.0 + ti * 0.2)
+    );
+    color *= wbFactors;
+    
     color = max(color, 0.0);
 
     // -- 6. Basics: Highlights/Shadows/Whites/Blacks --
     float luma = getLuma(color);
-    float hMask = smoothstep(0.4, 0.9, luma);
+    float hMask = smoothstep(0.3, 0.8, luma);
     float sMask = 1.0 - smoothstep(0.1, 0.6, luma);
-    float wMask = smoothstep(0.7, 1.0, luma);
-    float bMask = 1.0 - smoothstep(0.0, 0.3, luma);
+    float wMask = smoothstep(0.6, 1.0, luma);
+    float bMask = 1.0 - smoothstep(0.0, 0.4, luma);
     
     if (u_highlights < 0.0) {
-        color = mix(color, color * (1.0 + u_highlights * 0.6), hMask);
+        color = mix(color, color * (1.0 + u_highlights * 0.7), hMask);
     } else {
-        color += u_highlights * 0.1 * hMask;
+        color += u_highlights * 0.2 * hMask;
     }
     
     if (u_shadows > 0.0) {
-        color = mix(color, 1.0 - (1.0 - color) * (1.0 - u_shadows * 0.4), sMask);
+        color = mix(color, 1.0 - (1.0 - color) * (1.0 - u_shadows * 0.5), sMask);
     } else {
-        color *= (1.0 + u_shadows * 0.3 * sMask);
+        color *= (1.0 + u_shadows * 0.4 * sMask);
     }
     
-    color += u_whites * 0.15 * wMask;
-    color += u_blacks * 0.15 * bMask;
+    color += u_whites * 0.2 * wMask;
+    color += u_blacks * 0.2 * bMask;
     color = max(color, 0.0);
 
-    // -- 7. Clarity & Texture --
+    // -- 7. Real Clarity & Texture (Local Contrast) --
+    // We use a multi-tap high-frequency extraction
+    vec2 pixelSize = 1.5 / u_resolution;
+    vec3 n = toLinear(texture(u_image, uv + vec2(0.0, pixelSize.y)).rgb);
+    vec3 s = toLinear(texture(u_image, uv - vec2(0.0, pixelSize.y)).rgb);
+    vec3 e = toLinear(texture(u_image, uv + vec2(pixelSize.x, 0.0)).rgb);
+    vec3 w = toLinear(texture(u_image, uv - vec2(pixelSize.x, 0.0)).rgb);
+    vec3 avg = (n + s + e + w) * 0.25;
+    
+    // Texture: Fine details (High pass)
+    vec3 details = color - avg;
+    color += details * u_texture * 0.5;
+    
+    // Clarity: Mid-tone local contrast
+    // We use a larger radius radial kernel for clarity (20px approx, 8-tap)
+    vec2 claritySize = 20.0 / u_resolution;
+    vec3 c_avg = vec3(0.0);
+    // 8-tap radial kernel to avoid orthogonal artifacts at large radii
+    c_avg += toLinear(texture(u_image, uv + vec2(claritySize.x, 0.0)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(-claritySize.x, 0.0)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(0.0, claritySize.y)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(0.0, -claritySize.y)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(0.707 * claritySize.x, 0.707 * claritySize.y)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(-0.707 * claritySize.x, 0.707 * claritySize.y)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(0.707 * claritySize.x, -0.707 * claritySize.y)).rgb);
+    c_avg += toLinear(texture(u_image, uv + vec2(-0.707 * claritySize.x, -0.707 * claritySize.y)).rgb);
+    c_avg /= 8.0;
+    
     float midtoneMask = smoothstep(0.1, 0.5, luma) * (1.0 - smoothstep(0.5, 0.9, luma));
-    color += (color - 0.5) * u_clarity * midtoneMask * 0.4;
-    color += (color - 0.5) * u_texture * 0.2;
+    color += (color - c_avg) * u_clarity * midtoneMask * 0.8;
+    
     color = max(color, 0.0);
 
     // -- 8. Contrast --
@@ -208,40 +255,52 @@ export const FRAGMENT_SHADER = `#version 300 es
     color = applySplitToning(color, toLinear(u_shadowTint), toLinear(u_midtoneTint), toLinear(u_highlightTint), u_balance);
     color = max(color, 0.0);
 
-    // -- 11. Creative: Dehaze, Sepia, Sharpness --
+    // -- 11. Creative: Dehaze, Sharpness & Focus --
     if (abs(u_dehaze) > 0.01) {
         float d = u_dehaze * 0.15;
         color = (color - d) / (1.0 - abs(d) + 0.0001);
     }
-    if (u_sepia > 0.0) {
-        vec3 sepiaColor = vec3(dot(color, vec3(0.393, 0.769, 0.189)), dot(color, vec3(0.349, 0.686, 0.168)), dot(color, vec3(0.272, 0.534, 0.131)));
-        color = mix(color, sepiaColor, u_sepia);
-    }
     
-    // Sharpness (High-pass filter in linear space)
-    float finalSharp = u_sharpening + u_focus;
-    if (finalSharp > 0.0) {
-        vec2 stepSize = 1.0 / u_resolution;
-        vec3 n = toLinear(texture(u_image, uv + vec2(0.0, stepSize.y)).rgb);
-        vec3 s = toLinear(texture(u_image, uv - vec2(0.0, stepSize.y)).rgb);
-        vec3 e = toLinear(texture(u_image, uv + vec2(stepSize.x, 0.0)).rgb);
-        vec3 w = toLinear(texture(u_image, uv - vec2(stepSize.x, 0.0)).rgb);
-        vec3 avg = (n + s + e + w) * 0.25;
-        color += (color - avg) * finalSharp * 0.4;
-    }
+    // Sharpness & Focus (Different Radii)
+    vec2 focusSize = 3.5 / u_resolution;
+    vec3 f_n = toLinear(texture(u_image, uv + vec2(0.0, focusSize.y)).rgb);
+    vec3 f_s = toLinear(texture(u_image, uv - vec2(0.0, focusSize.y)).rgb);
+    vec3 f_e = toLinear(texture(u_image, uv + vec2(focusSize.x, 0.0)).rgb);
+    vec3 f_w = toLinear(texture(u_image, uv - vec2(focusSize.x, 0.0)).rgb);
+    vec3 focusAvg = (f_n + f_s + f_e + f_w) * 0.25;
+
+    float distToCenter = distance(uv, vec2(0.5));
+    float focusMask = 1.0 - smoothstep(0.0, 0.7, distToCenter);
+    
+    color += (color - avg) * u_sharpening * 0.4;
+    color += (color - focusAvg) * u_focus * 0.6 * focusMask;
+    
     color = max(color, 0.0);
 
-    // -- 12. Tone Mapping --
+    // -- 12. Tone Mapping (Soft Shoulder) --
     color = toneMap(color);
 
     // -- 13. Re-gamma to sRGB --
     color = toSRGB(color);
 
-    // -- 14. Final Final effects (Vignette, Grain) --
-    float distToCenter = distance(uv, vec2(0.5));
+    // -- 14. Sepia (Apply in sRGB as traditional filters are designed for it) --
+    if (u_sepia > 0.0) {
+        vec3 sepiaColor = vec3(
+            dot(color, vec3(0.393, 0.769, 0.189)), 
+            dot(color, vec3(0.349, 0.686, 0.168)), 
+            dot(color, vec3(0.272, 0.534, 0.131))
+        );
+        color = mix(color, sepiaColor, u_sepia);
+    }
+
+    // -- 15. Final Final effects (Vignette, Grain) --
+    distToCenter = distance(uv, vec2(0.5));
     color *= smoothstep(0.8, 0.8 - u_vignette * 0.4, distToCenter);
+    
+    // Grain with Luminance mask (Issue 10)
     float noiseVal = (fract(sin(dot(uv + u_time, vec2(12.9898, 78.233))) * 43758.5453) - 0.5);
-    color += noiseVal * u_grain * 0.08;
+    float grainMask = 1.0 - luma; // More visible in shadows/midtone
+    color += noiseVal * u_grain * 0.12 * grainMask;
 
     outColor = vec4(clamp(color, 0.0, 1.0), tex.a);
   }

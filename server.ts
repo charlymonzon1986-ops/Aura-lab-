@@ -7,10 +7,12 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import cors from "cors";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 import multer from "multer";
 import sharp from "sharp";
 import axios from "axios";
-// Optimize sharp for Cloud Run (reduce memory usage)
+// Optimize sharp
 sharp.cache(false);
 if (process.env.K_SERVICE) {
   sharp.concurrency(1);
@@ -23,7 +25,7 @@ import B2Package from 'backblaze-b2';
 const B2 = (B2Package as any).default || B2Package;
 import archiver from 'archiver';
 import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, Filter } from 'firebase-admin/firestore';
 import os from 'os';
 import crypto from 'crypto';
 import { GoogleGenAI } from "@google/genai";
@@ -31,7 +33,6 @@ import { GoogleGenAI } from "@google/genai";
 // 1. Core configuration
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const isProd = process.env.NODE_ENV === "production";
-const isCloudRun = !!process.env.K_SERVICE;
 
 const STORAGE_LIMITS: Record<string, number> = {
   'free': 2 * 1024 * 1024 * 1024, // 2GB
@@ -39,8 +40,8 @@ const STORAGE_LIMITS: Record<string, number> = {
   'enterprise': 1024 * 1024 * 1024 * 1024 // 1TB
 };
 
-console.log(`🌍 Environment: NODE_ENV=${process.env.NODE_ENV}, K_SERVICE=${process.env.K_SERVICE}`);
-console.log(`🚀 isProd: ${isProd}, isCloudRun: ${isCloudRun}`);
+console.log(`🌍 Environment: NODE_ENV=${process.env.NODE_ENV}`);
+console.log(`🚀 isProd: ${isProd}`);
 
 let _dirname: string;
 try {
@@ -86,6 +87,58 @@ const DEFAULT_SETTINGS = {
 
 async function startServer() {
   const app = express();
+
+  // Trust proxy for rate limiting behind Cloud Run/Vercel
+  app.set('trust proxy', 1);
+
+  // Security Headers - Relaxed for Dev Preview/Iframes, strict in Prod
+  app.use(helmet({
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    frameguard: { action: 'sameorigin' }, 
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        "img-src": ["'self'", "data:", "https:", "blob:", "https://*.backblazeb2.com"],
+        "connect-src": ["'self'", "https:", "wss:", "https://*.google.com", "https://*.googleapis.com", "blob:"],
+        "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'", "'wasm-unsafe-eval'"],
+        "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        "font-src": ["'self'", "https://fonts.gstatic.com"],
+        "frame-ancestors": [
+          "'self'",
+          ...(isProd ? [] : ["https://*.google.com"])
+        ]
+      },
+    }
+  }));
+
+  // Rate Limiting
+  const standardLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isProd ? 100 : 1000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests, please try again later." }
+  });
+
+  // Apply standard limiter to all API routes
+  app.use("/api/", standardLimiter);
+
+  const aiLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: isProd ? 20 : 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "AI limit reached. Please try again later." }
+  });
+
+  const uploadLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: isProd ? 50 : 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Upload limit reached. Please try again later." }
+  });
 
   // Basic health check
   app.get("/health", (req, res) => res.status(200).send("OK"));
@@ -137,7 +190,60 @@ async function startServer() {
   // Explicitly handle WASM MIME type
   express.static.mime.define({ 'application/wasm': ['wasm'] });
 
+  const sqlLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 50, // 50 requests per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many static requests." }
+  });
+
+  // Relaxed headers for WASM files
+  app.use('/sql', sqlLimiter, (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    next();
+  });
+
+  // Serve sql.js files directly from node_modules to avoid corruption
+  app.get('/sql/:file', standardLimiter, (req, res, next) => {
+    const fileName = req.params.file;
+    if (fileName !== 'sql-wasm.js' && fileName !== 'sql-wasm.wasm') {
+      return next();
+    }
+
+    const nodeModulesPath = path.join(APP_DIR, 'node_modules', 'sql.js', 'dist', fileName);
+    const localPath = path.join(APP_DIR, isProd ? 'dist' : 'public', 'sql', fileName);
+    
+    // Prioritize node_modules for reliability
+    const finalPath = fs.existsSync(nodeModulesPath) ? nodeModulesPath : (fs.existsSync(localPath) ? localPath : null);
+    
+    if (finalPath) {
+      if (fileName.endsWith('.wasm')) {
+        res.setHeader('Content-Type', 'application/wasm');
+      } else if (fileName.endsWith('.js')) {
+        res.setHeader('Content-Type', 'application/javascript');
+      }
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      return res.sendFile(finalPath);
+    }
+    next();
+  });
+
   // 2. Service Initializations
+  console.log("🛠️ Checking service configurations...");
+  if (!process.env.B2_KEY_ID || !process.env.B2_APPLICATION_KEY) {
+    console.warn("⚠️ Backblaze B2 credentials missing. Storage functions will fail.");
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("⚠️ GEMINI_API_KEY missing. AI features will fail.");
+  }
+  if (!process.env.MERCADOPAGO_ACCESS_TOKEN) {
+    console.warn("⚠️ MERCADOPAGO_ACCESS_TOKEN missing. Payments will fail.");
+  }
+
   function loadFirebaseConfig() {
     const paths = [
       path.join(APP_DIR, 'firebase-applet-config.json'),
@@ -182,8 +288,8 @@ async function startServer() {
   }
 
   const b2 = new B2({
-    applicationKeyId: process.env.B2_KEY_ID || 'dummy',
-    applicationKey: process.env.B2_APPLICATION_KEY || 'dummy'
+    applicationKeyId: process.env.B2_KEY_ID,
+    applicationKey: process.env.B2_APPLICATION_KEY
   });
 
   let b2Authorized = false;
@@ -318,13 +424,34 @@ async function startServer() {
   }
 
   // 3. API Routes
-  app.get("/api/debug-paths", (req, res) => {
-    res.json({ APP_DIR, cwd: process.cwd(), isProd });
-  });
+  // REMOVED /api/debug-paths for security
 
-  app.get("/api/b2-proxy/:fileName", async (req, res) => {
+  app.get("/api/b2-proxy/:fileName", authenticate, async (req: any, res) => {
     try {
-      const data = await downloadFromB2(req.params.fileName);
+      const { fileName } = req.params;
+      const userId = req.user.uid;
+
+      // Ownership check: Verify this file belongs to the user or is public via a gallery
+      const proxyUrl = `/api/b2-proxy/${encodeURIComponent(fileName)}`;
+      
+      const photoQuery = await fsDb.collection("photos")
+        .where("userId", "==", userId)
+        .where(Filter.or(
+          Filter.where("url", "==", proxyUrl),
+          Filter.where("thumbnailUrl", "==", proxyUrl)
+        ))
+        .limit(1)
+        .get();
+
+      if (photoQuery.empty) {
+        // Fallback check for admin
+        const userDoc = await fsDb.collection("users").doc(userId).get();
+        if (userDoc.data()?.role !== 'admin') {
+          return res.status(403).send("Forbidden: Ownership verification failed");
+        }
+      }
+
+      const data = await downloadFromB2(fileName);
       res.setHeader('Cache-Control', 'public, max-age=31536000');
       res.setHeader('Access-Control-Allow-Origin', '*');
       const ext = path.extname(req.params.fileName).toLowerCase();
@@ -337,7 +464,11 @@ async function startServer() {
   let mpClient: MercadoPagoConfig | null = null;
   function getMP() {
     if (!mpClient) {
-      mpClient = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || 'TEST' });
+      const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+      if (!accessToken) {
+        throw new Error("MERCADOPAGO_ACCESS_TOKEN is missing. Please configure it in your environment variables.");
+      }
+      mpClient = new MercadoPagoConfig({ accessToken });
     }
     return mpClient;
   }
@@ -352,7 +483,6 @@ async function startServer() {
       res.json({ 
         gemini_ai: !!process.env.GEMINI_API_KEY, 
         mercadopago: !!process.env.MERCADOPAGO_ACCESS_TOKEN, 
-        resend: !!process.env.RESEND_API_KEY, 
         b2: !!process.env.B2_APPLICATION_KEY, 
         prod: isProd 
       });
@@ -364,7 +494,7 @@ async function startServer() {
   // AI Endpoints
   const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-  app.post("/api/ai/analyze", authenticate, async (req: any, res) => {
+  app.post("/api/ai/analyze", authenticate, aiLimiter, async (req: any, res) => {
     try {
       const { imageData, mimeType, prompt } = req.body;
       const response = await genAI.models.generateContent({
@@ -383,7 +513,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ai/enhance", authenticate, async (req: any, res) => {
+  app.post("/api/ai/enhance", authenticate, aiLimiter, async (req: any, res) => {
     try {
       const { imageData, mimeType, prompt } = req.body;
       const response = await genAI.models.generateContent({
@@ -572,13 +702,23 @@ async function startServer() {
     arc.finalize();
   });
 
-  app.get("/api/gallery/download/:slug", async (req, res) => {
+  app.get("/api/gallery/download/:slug", authenticate, async (req: any, res) => {
     try {
       const { slug } = req.params;
       const gallerySnap = await fsDb.collection("galleries").where("slug", "==", slug).limit(1).get();
       if (gallerySnap.empty) return res.status(404).send("Gallery not found");
       
       const gallery = gallerySnap.docs[0].data();
+      const userId = req.user.uid;
+
+      // Privacy Check: Gallery must belong to user or be public
+      if (gallery.userId !== userId && !gallery.isPublic) {
+        const userDoc = await fsDb.collection("users").doc(userId).get();
+        if (userDoc.data()?.role !== 'admin') {
+          return res.status(403).send("Forbidden: Private gallery");
+        }
+      }
+
       const photoIds = gallery.photoIds || [];
       if (photoIds.length === 0) return res.status(400).send("Gallery is empty");
 
@@ -641,7 +781,13 @@ async function startServer() {
   });
 
   app.get("/api/version", (req, res) => {
-    res.json({ latest: "1.3.1" });
+    const pkgPath = path.join(APP_DIR, 'package.json');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      res.json({ latest: pkg.version });
+    } catch {
+      res.json({ latest: "1.3.1" }); // Fallback
+    }
   });
 
   app.post("/api/delete-file", authenticate, async (req: any, res) => {
@@ -657,7 +803,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/upload", authenticate, upload.single("file"), async (req: any, res) => {
+  app.post("/api/upload", authenticate, uploadLimiter, upload.single("file"), async (req: any, res) => {
     try {
       const { file } = req;
       const userId = req.user.uid;
@@ -701,10 +847,11 @@ async function startServer() {
   });
 
   // 4. Vite / Static Serving
-  if (!isProd && !isCloudRun) {
+  if (!isProd) {
     console.log("🛠️ Starting Vite middleware for local development...");
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
+      root: APP_DIR,
       server: { middlewareMode: true },
       appType: 'spa'
     });

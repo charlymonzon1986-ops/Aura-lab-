@@ -9,95 +9,138 @@ interface ColorWheelProps {
 }
 
 function ColorWheel({ label, value, onChange, onCommit }: ColorWheelProps) {
-  const [isDragging, setIsDragging] = React.useState(false);
   const wheelRef = React.useRef<HTMLDivElement>(null);
+  const isDraggingRef = React.useRef(false);
   const lastValueRef = React.useRef(value);
 
-  const handleInteraction = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!wheelRef.current) return;
-    const rect = wheelRef.current.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    
-    const dx = clientX - centerX;
-    const dy = clientY - centerY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
+  // Parse current value → {h, s} for pointer position
+  const parsedValue = React.useMemo(() => {
+    if (!value || value === "transparent") return null;
+    try {
+      const parts = value.match(/[\d.]+/g);
+      if (!parts || parts.length < 2) return null;
+      return { h: parseFloat(parts[0]), s: parseFloat(parts[1]) };
+    } catch { return null; }
+  }, [value]);
+
+  const getColorFromEvent = React.useCallback((e: PointerEvent | React.PointerEvent) => {
+    const wheel = wheelRef.current;
+    if (!wheel) return null;
+    const rect = wheel.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = e.clientX - cx;
+    const dy = e.clientY - cy;
     const radius = rect.width / 2;
-    
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    // Clamp to wheel boundary
+    const clampedDist = Math.min(dist, radius);
     let angle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
     if (angle < 0) angle += 360;
     if (angle >= 360) angle -= 360;
-    
-    const saturation = Math.min(100, (distance / radius) * 100);
-    
-    if (distance <= radius * 1.1 || isDragging) {
-      const safeAngle = typeof angle === 'number' ? angle : 0;
-      const safeSaturation = typeof saturation === 'number' ? saturation : 0;
-      const newValue = `hsla(${safeAngle.toFixed(0)}, ${safeSaturation.toFixed(0)}%, 50%, 0.5)`;
-      lastValueRef.current = newValue;
-      onChange(newValue);
-    }
-  };
+    const saturation = (clampedDist / radius) * 100;
 
-  const getPointerPos = () => {
-    if (!value || value === "transparent") return null;
-    try {
-      const parts = value.match(/\d+(\.\d+)?/g);
-      if (!parts || parts.length < 2) return null;
-      const h = parseFloat(parts[0]);
-      const s = parseFloat(parts[1]);
-      
-      const angleRad = (h - 90) * (Math.PI / 180);
-      const finalRadius = (s / 100) * 50; 
-      
-      return {
-        left: `${50 + finalRadius * Math.cos(angleRad)}%`,
-        top: `${50 + finalRadius * Math.sin(angleRad)}%`,
-        backgroundColor: value.replace('0.5', '1')
-      };
-    } catch (e) {
-      return null;
-    }
-  };
+    return `hsla(${angle.toFixed(1)}, ${saturation.toFixed(1)}%, 50%, 0.6)`;
+  }, []);
 
-  const pointerPos = getPointerPos();
+  const handlePointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    // Pointer capture: drag continues even if pointer leaves the element
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    const color = getColorFromEvent(e);
+    if (color) { lastValueRef.current = color; onChange(color); }
+  }, [getColorFromEvent, onChange]);
+
+  const handlePointerMove = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    e.preventDefault();
+    const color = getColorFromEvent(e);
+    if (color) { lastValueRef.current = color; onChange(color); }
+  }, [getColorFromEvent, onChange]);
+
+  const handlePointerUp = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    isDraggingRef.current = false;
+    (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+    onCommit(lastValueRef.current);
+  }, [onCommit]);
+
+  // Pointer dot position
+  const pointerStyle = React.useMemo(() => {
+    if (!parsedValue) return null;
+    const { h, s } = parsedValue;
+    const angleRad = (h - 90) * (Math.PI / 180);
+    const r = (s / 100) * 50; // % of element half-width
+    return {
+      left: `${50 + r * Math.cos(angleRad)}%`,
+      top: `${50 + r * Math.sin(angleRad)}%`,
+      backgroundColor: value.replace("0.6", "1"),
+    };
+  }, [parsedValue, value]);
 
   return (
-    <div className="flex flex-col items-center gap-3">
-      <Label className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">{label}</Label>
-      <div 
+    <div className="flex flex-col items-center gap-2">
+      <Label className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+        {label}
+      </Label>
+
+      <div
         ref={wheelRef}
-        className="w-20 h-20 rounded-full relative cursor-crosshair border border-zinc-800 shadow-inner overflow-hidden"
-        style={{
-          background: `conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)`,
-        }}
-        onMouseDown={(e) => { setIsDragging(true); handleInteraction(e); }}
-        onMouseMove={(e) => isDragging && handleInteraction(e)}
-        onMouseUp={() => { setIsDragging(false); onCommit(lastValueRef.current); }}
-        onMouseLeave={() => { if (isDragging) { setIsDragging(false); onCommit(lastValueRef.current); } }}
-        onTouchStart={(e) => { setIsDragging(true); handleInteraction(e); }}
-        onTouchMove={(e) => isDragging && handleInteraction(e)}
-        onTouchEnd={() => { setIsDragging(false); onCommit(lastValueRef.current); }}
+        className="relative cursor-crosshair select-none touch-none"
+        style={{ width: 80, height: 80, borderRadius: "50%", overflow: "hidden" }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
       >
-        {/* Pointer */}
-        {pointerPos && (
-          <div 
-            className="absolute w-3 h-3 border-2 border-white rounded-full shadow-md pointer-events-none -translate-x-1/2 -translate-y-1/2 z-10"
-            style={pointerPos}
+        {/* Hue ring (conic gradient) */}
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background: "conic-gradient(from 270deg, red, yellow, lime, cyan, blue, magenta, red)",
+          }}
+        />
+        {/* Saturation fade: radial white→transparent overlaid on hue ring */}
+        {/* This creates the classic wheel: saturated on edge, neutral white at center */}
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background:
+              "radial-gradient(circle, rgba(255,255,255,1) 0%, rgba(255,255,255,0.6) 30%, rgba(255,255,255,0) 70%)",
+          }}
+        />
+        {/* Subtle dark border for depth */}
+        <div
+          className="absolute inset-0 rounded-full pointer-events-none"
+          style={{ boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.4), inset 0 0 8px rgba(0,0,0,0.2)" }}
+        />
+        {/* Drag indicator dot */}
+        {pointerStyle && (
+          <div
+            className="absolute w-3.5 h-3.5 rounded-full border-2 border-white shadow-lg pointer-events-none z-10"
+            style={{
+              ...pointerStyle,
+              transform: "translate(-50%, -50%)",
+              boxShadow: "0 0 0 1px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.5)",
+            }}
           />
         )}
-        {/* Inner shadow for "wheel" look */}
-        <div className="absolute inset-0 rounded-full bg-gradient-to-b from-transparent to-black/20 pointer-events-none" />
       </div>
-      <button 
-        onClick={() => { onChange("transparent"); onCommit("transparent"); }}
-        className="text-[8px] uppercase text-zinc-600 hover:text-zinc-400 transition-colors"
-      >
-        Reset
-      </button>
+
+      {/* Current color swatch + reset */}
+      <div className="flex items-center gap-2">
+        <div
+          className="w-4 h-4 rounded-full border border-zinc-700"
+          style={{ background: value === "transparent" ? "#3f3f46" : value.replace("0.6", "1") }}
+        />
+        <button
+          onClick={() => { onChange("transparent"); onCommit("transparent"); }}
+          className="text-[8px] uppercase text-zinc-600 hover:text-zinc-400 transition-colors"
+        >
+          Reset
+        </button>
+      </div>
     </div>
   );
 }
@@ -106,18 +149,31 @@ interface ColorBalanceProps {
   shadows: string;
   midtones: string;
   highlights: string;
-  onChange: (key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string) => void;
-  onCommit: (key: 'shadowTint' | 'midtoneTint' | 'highlightTint', value: string) => void;
+  onChange: (key: "shadowTint" | "midtoneTint" | "highlightTint", value: string) => void;
+  onCommit: (key: "shadowTint" | "midtoneTint" | "highlightTint", value: string) => void;
 }
 
 export function ColorBalance({ shadows, midtones, highlights, onChange, onCommit }: ColorBalanceProps) {
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center px-2">
-        <ColorWheel label="Sombras" value={shadows} onChange={(v) => onChange('shadowTint', v)} onCommit={(v) => onCommit('shadowTint', v)} />
-        <ColorWheel label="Medios" value={midtones} onChange={(v) => onChange('midtoneTint', v)} onCommit={(v) => onCommit('midtoneTint', v)} />
-        <ColorWheel label="Altas" value={highlights} onChange={(v) => onChange('highlightTint', v)} onCommit={(v) => onCommit('highlightTint', v)} />
-      </div>
+    <div className="flex justify-between items-start px-1">
+      <ColorWheel
+        label="Sombras"
+        value={shadows}
+        onChange={(v) => onChange("shadowTint", v)}
+        onCommit={(v) => onCommit("shadowTint", v)}
+      />
+      <ColorWheel
+        label="Medios"
+        value={midtones}
+        onChange={(v) => onChange("midtoneTint", v)}
+        onCommit={(v) => onCommit("midtoneTint", v)}
+      />
+      <ColorWheel
+        label="Altas"
+        value={highlights}
+        onChange={(v) => onChange("highlightTint", v)}
+        onCommit={(v) => onCommit("highlightTint", v)}
+      />
     </div>
   );
 }

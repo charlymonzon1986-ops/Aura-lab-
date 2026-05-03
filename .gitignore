@@ -5,6 +5,7 @@ coverage/
 .env*
 !.env.example
 service-account.json
+firebase-applet-config.json
 dist/
 uploads/
 temp/

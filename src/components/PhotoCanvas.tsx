@@ -30,7 +30,7 @@ export async function renderImageToCanvas(
     renderer.setImage(img);
     if (isComparing) {
       // Scissor test for comparison
-      const gl = canvas.getContext('webgl')!;
+      const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl'))!;
       gl.enable(gl.SCISSOR_TEST);
       
       const splitX = Math.floor(drawWidth * (compareValue / 100));
@@ -143,56 +143,66 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
   const rendererRef = React.useRef<WebGLRenderer | null>(null);
   const histogramTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
-  // Load image from URL
+  // Load image from URL with Auth
   React.useEffect(() => {
     if (!imageUrl) {
       if (!imageData) setSource(null);
       return;
     }
-    
-    let isMounted = true;
-    const tryLoad = (useCors: boolean) => {
-      console.log(`PhotoCanvas: Loading image (CORS: ${useCors}):`, imageUrl);
-      const i = new Image();
-      if (useCors) i.crossOrigin = "anonymous";
-      
-      const timeout = setTimeout(() => {
-        if (!i.complete && isMounted) {
-          console.warn("PhotoCanvas: Image load timeout");
-          if (useCors) {
-            console.log("PhotoCanvas: Retrying without CORS...");
-            tryLoad(false);
-          }
-        }
-      }, 8000);
 
-      i.onload = () => {
-        clearTimeout(timeout);
-        if (isMounted) {
-          console.log("PhotoCanvas: Success:", i.width, "x", i.height);
-          setSource(i);
+    let isMounted = true;
+    let blobUrl: string | null = null;
+
+    const loadWithAuth = async () => {
+      try {
+        // Obtener token de Firebase
+        const { getAuth } = await import('firebase/auth');
+        const auth = getAuth();
+        const token = await auth.currentUser?.getIdToken();
+
+        const headers: HeadersInit = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
+        const response = await fetch(imageUrl, { headers });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
         }
-      };
-      
-      i.onerror = () => {
-        clearTimeout(timeout);
-        if (isMounted) {
-          if (useCors) {
-            console.log("PhotoCanvas: CORS failure, retrying without CORS...");
-            tryLoad(false);
-          } else {
-            console.error("PhotoCanvas: Hard load failure:", imageUrl);
+
+        const blob = await response.blob();
+        blobUrl = URL.createObjectURL(blob);
+
+        if (!isMounted) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+
+        const img = new Image();
+        img.onload = () => {
+          if (isMounted) {
+            console.log("PhotoCanvas: Success:", img.width, "x", img.height);
+            setSource(img);
           }
+        };
+        img.onerror = () => {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          console.error('PhotoCanvas: failed to render blob URL');
+        };
+        img.src = blobUrl;
+
+      } catch (e) {
+        if (isMounted) {
+          console.error('PhotoCanvas: load failed', e);
+          toast.error('No se pudo cargar la imagen.');
         }
-      };
-      
-      i.src = imageUrl;
+      }
     };
 
-    tryLoad(true);
-    
+    loadWithAuth();
+
     return () => {
       isMounted = false;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [imageUrl]);
 
@@ -221,6 +231,7 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
 
   // Use a cleaner render loop
   React.useEffect(() => {
+    let isMounted = true;
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container || !source) return;
@@ -270,101 +281,105 @@ export const PhotoCanvas = React.memo(React.forwardRef<HTMLCanvasElement, PhotoC
       if (!source) return;
       if (source instanceof HTMLImageElement && (!source.complete || source.naturalWidth === 0)) return;
       
-      try {
-        if (!rendererRef.current) {
-          rendererRef.current = new WebGLRenderer(canvas);
-        }
-        const renderer = rendererRef.current;
-        renderer.setImage(source);
+      requestAnimationFrame(() => {
+        if (!isMounted) return;
+        try {
+          if (!rendererRef.current) {
+            rendererRef.current = new WebGLRenderer(canvas);
+          }
+          const renderer = rendererRef.current;
+          renderer.setImage(source);
 
-        if (isComparing) {
-          const gl = canvas.getContext('webgl')!;
-          gl.enable(gl.SCISSOR_TEST);
-          const splitX = Math.floor(w * (compareValue / 100));
-          
-          // Draw Original on left
-          gl.scissor(0, 0, splitX, h);
-          renderer.render({ 
-            ...settings, 
-            exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, 
-            warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, 
-            vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null,
-            texture: 0, clarity: 0, dehaze: 0, sharpening: 0, noiseReduction: 0,
-            focus: 0, distortion: 0,
-            shadowTint: "transparent", midtoneTint: "transparent", highlightTint: "transparent",
-            balance: 0
-          }, w, h);
-          
-          gl.scissor(splitX, 0, w - splitX, h);
-          renderer.render(settings, w, h);
-          gl.disable(gl.SCISSOR_TEST);
-        } else {
-          renderer.render(settings, w, h);
-        }
-        
-        // Throttled Histogram Analysis (150ms)
-        if (onHistogramData) {
-          if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
-          histogramTimeoutRef.current = setTimeout(() => {
-            if (rendererRef.current) {
-              const pixels = rendererRef.current.getAnalysisPixels(settings);
-              onHistogramData(pixels);
-            }
-          }, 150);
-        }
-        
-        if (onImageReady) onImageReady(canvas);
-      } catch (e) {
-        console.error("WebGL Draw Failure:", e);
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, w, h);
           if (isComparing) {
-            const splitX = w * (compareValue / 100);
-            ctx.save();
-            ctx.beginPath(); ctx.rect(0, 0, splitX, h); ctx.clip();
-            if (source instanceof ImageData) {
-              const tempCanvas = document.createElement('canvas');
-              tempCanvas.width = source.width;
-              tempCanvas.height = source.height;
-              tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
-              ctx.drawImage(tempCanvas, 0, 0, w, h);
-            } else {
-              ctx.drawImage(source, 0, 0, w, h);
-            }
-            ctx.restore();
-            ctx.save();
-            ctx.beginPath(); ctx.rect(splitX, 0, w - splitX, h); ctx.clip();
-            ctx.filter = getFilterString(settings);
-            if (source instanceof ImageData) {
-              const tempCanvas = document.createElement('canvas');
-              tempCanvas.width = source.width;
-              tempCanvas.height = source.height;
-              tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
-              ctx.drawImage(tempCanvas, 0, 0, w, h);
-            } else {
-              ctx.drawImage(source, 0, 0, w, h);
-            }
-            ctx.restore();
+            const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl'))!;
+            gl.enable(gl.SCISSOR_TEST);
+            const splitX = Math.floor(w * (compareValue / 100));
+            
+            // Draw Original on left
+            gl.scissor(0, 0, splitX, h);
+            renderer.render({ 
+              ...settings, 
+              exposure: 0, brightness: 100, contrast: 100, saturation: 100, vibrance: 100, 
+              warmth: 0, tint: 0, highlights: 100, shadows: 100, whites: 100, blacks: 100, 
+              vignette: 0, grain: 0, sepia: 0, blur: 0, lut: null,
+              texture: 0, clarity: 0, dehaze: 0, sharpening: 0, noiseReduction: 0,
+              focus: 0, distortion: 0,
+              shadowTint: "transparent", midtoneTint: "transparent", highlightTint: "transparent",
+              balance: 0
+            }, w, h);
+            
+            gl.scissor(splitX, 0, w - splitX, h);
+            renderer.render(settings, w, h);
+            gl.disable(gl.SCISSOR_TEST);
           } else {
-            ctx.filter = getFilterString(settings);
-            if (source instanceof ImageData) {
-              const tempCanvas = document.createElement('canvas');
-              tempCanvas.width = source.width;
-              tempCanvas.height = source.height;
-              tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
-              ctx.drawImage(tempCanvas, 0, 0, w, h);
+            renderer.render(settings, w, h);
+          }
+          
+          // Throttled Histogram Analysis (150ms)
+          if (onHistogramData) {
+            if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
+            histogramTimeoutRef.current = setTimeout(() => {
+              if (rendererRef.current) {
+                const pixels = rendererRef.current.getAnalysisPixels(settings);
+                onHistogramData(pixels);
+              }
+            }, 150);
+          }
+          
+          if (onImageReady) onImageReady(canvas);
+        } catch (e) {
+          console.error("WebGL Draw Failure:", e);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, w, h);
+            if (isComparing) {
+              const splitX = w * (compareValue / 100);
+              ctx.save();
+              ctx.beginPath(); ctx.rect(0, 0, splitX, h); ctx.clip();
+              if (source instanceof ImageData) {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = source.width;
+                tempCanvas.height = source.height;
+                tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
+                ctx.drawImage(tempCanvas, 0, 0, w, h);
+              } else {
+                ctx.drawImage(source, 0, 0, w, h);
+              }
+              ctx.restore();
+              ctx.save();
+              ctx.beginPath(); ctx.rect(splitX, 0, w - splitX, h); ctx.clip();
+              ctx.filter = getFilterString(settings);
+              if (source instanceof ImageData) {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = source.width;
+                tempCanvas.height = source.height;
+                tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
+                ctx.drawImage(tempCanvas, 0, 0, w, h);
+              } else {
+                ctx.drawImage(source, 0, 0, w, h);
+              }
+              ctx.restore();
             } else {
-              ctx.drawImage(source, 0, 0, w, h);
+              ctx.filter = getFilterString(settings);
+              if (source instanceof ImageData) {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = source.width;
+                tempCanvas.height = source.height;
+                tempCanvas.getContext('2d')?.putImageData(source, 0, 0);
+                ctx.drawImage(tempCanvas, 0, 0, w, h);
+              } else {
+                ctx.drawImage(source, 0, 0, w, h);
+              }
             }
           }
         }
-      }
+      });
     };
 
     render();
     
     return () => {
+      isMounted = false;
       if (histogramTimeoutRef.current) clearTimeout(histogramTimeoutRef.current);
       if (rendererRef.current) {
         rendererRef.current.destroy();

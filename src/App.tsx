@@ -53,6 +53,12 @@ import {
   Database,
   ExternalLink,
   ChevronDown,
+  Palette,
+  Maximize2,
+  SlidersHorizontal,
+  Eraser,
+  BoxSelect,
+  ImagePlus,
   Mail,
   Phone,
   Building2,
@@ -81,7 +87,8 @@ import axios from "axios";
 import { LightingControls } from "@/src/components/LightingControls";
 import { Histogram } from "@/src/components/Histogram";
 import { Filmstrip } from "@/src/components/Filmstrip";
-import { PhotoCanvas, renderImageToCanvas } from "@/src/components/PhotoCanvas";
+import { PhotoCanvas } from "@/src/components/PhotoCanvas";
+import { WebGLRenderer } from "@/src/lib/webglRenderer";
 import { ExportModal, ExportSettings } from "@/src/components/ExportModal";
 import { CropOverlay } from "@/src/components/CropOverlay";
 import { Photo, DEFAULT_SETTINGS, LightingSettings, Client, PhotoVersion, ClientGallery, UserProfile, PlanType, STORAGE_LIMITS, Preset, PLAN_PRICES, Folder } from "@/src/types";
@@ -244,6 +251,8 @@ function AppContent() {
   const [selectedClientId, setSelectedClientId] = React.useState<string | null>(null);
   const [selectedPhotoId, setSelectedPhotoId] = React.useState<string | null>(null);
   const [showEditorControls, setShowEditorControls] = React.useState(true);
+  const [activeMobileTool, setActiveMobileTool] = React.useState<'presets' | 'edit' | 'crop' | 'masking' | 'healing'>('edit');
+  const [activeMobileCategory, setActiveMobileCategory] = React.useState<string | null>(null);
   const [previewSettings, setPreviewSettings] = React.useState<LightingSettings | null>(null);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
   const [copiedSettings, setCopiedSettings] = React.useState<LightingSettings | null>(null);
@@ -460,6 +469,12 @@ function AppContent() {
     
     return () => unsubscribe();
   }, [user]);
+
+  React.useEffect(() => {
+    if (activeTab !== 'editor') {
+      setActiveMobileCategory(null);
+    }
+  }, [activeTab]);
 
   // Combined Clients & Galleries Listener
   React.useEffect(() => {
@@ -1787,72 +1802,166 @@ function AppContent() {
   const downloadImage = async (settings: any) => {
     if (!selectedPhoto) return;
     
-    const canvas = document.createElement('canvas');
     const imageData = localRawData[selectedPhoto.id];
     
     toast.promise(new Promise(async (resolve, reject) => {
-      const processDownload = async (source: HTMLImageElement | ImageData) => {
-        const s = selectedPhoto.settings;
-        const width = source.width;
-        const height = source.height;
-        
-        // Calculate dimensions based on any rotation angle
-        const angleRad = (s.rotation * Math.PI) / 180;
-        const baseWidth = Math.abs(width * Math.cos(angleRad)) + Math.abs(height * Math.sin(angleRad));
-        const baseHeight = Math.abs(width * Math.sin(angleRad)) + Math.abs(height * Math.cos(angleRad));
-        
-        const exportWidth = baseWidth * settings.scale;
-        const exportHeight = baseHeight * settings.scale;
+      let renderer: WebGLRenderer | null = null;
+      let blobUrl: string | null = null;
+      
+      try {
+        const processDownload = async (source: HTMLImageElement | ImageData) => {
+          try {
+            const s = selectedPhoto.settings;
+            // Use naturalWidth for images to get full resolution, or .width for ImageData
+            const width = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
+            const height = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
+            
+            if (!width || !height || width === 0 || height === 0) {
+              throw new Error("Dimensiones de imagen inválidas o imagen no cargada correctamente");
+            }
 
-        // Limit max resolution to avoid browser crashes (e.g., 8192px is safe for most)
-        const MAX_DIMENSION = 8192;
-        let finalScale = settings.scale;
-        if (exportWidth > MAX_DIMENSION || exportHeight > MAX_DIMENSION) {
-          finalScale = Math.min(MAX_DIMENSION / baseWidth, MAX_DIMENSION / baseHeight);
-          toast.warning(`Resolución ajustada a ${Math.round(finalScale * 100)}% por límites del navegador`);
-        }
+            // Calculate dimensions based on any rotation angle
+            const angleRad = (s.rotation * Math.PI) / 180;
+            const baseWidth = Math.abs(width * Math.cos(angleRad)) + Math.abs(height * Math.sin(angleRad));
+            const baseHeight = Math.abs(width * Math.sin(angleRad)) + Math.abs(height * Math.cos(angleRad));
+            
+            const exportWidth = Math.floor(baseWidth * (settings.scale || 1));
+            const exportHeight = Math.floor(baseHeight * (settings.scale || 1));
 
-        const finalWidth = baseWidth * finalScale;
-        const finalHeight = baseHeight * finalScale;
+            // Limit max resolution to avoid browser crashes (8k is a safe upper bound)
+            const MAX_DIMENSION = 8192;
+            let finalWidth = exportWidth;
+            let finalHeight = exportHeight;
+            
+            if (finalWidth > MAX_DIMENSION || finalHeight > MAX_DIMENSION) {
+              const ratio = Math.min(MAX_DIMENSION / finalWidth, MAX_DIMENSION / finalHeight);
+              finalWidth = Math.floor(finalWidth * ratio);
+              finalHeight = Math.floor(finalHeight * ratio);
+              toast.warning(`Resolución ajustada a ${finalWidth}px por límites del navegador`, { duration: 4000 });
+            }
 
-        await renderImageToCanvas(canvas, source, s, {
-          width: finalWidth,
-          height: finalHeight
-        });
-        
-        const extension = settings.format.split('/')[1];
-        const fileName = `lumina-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-')}.${extension}`;
-        
-        canvas.toBlob((blob) => {
-          if (!blob) {
-            reject(new Error("No se pudo generar el archivo"));
-            return;
+            const exportCanvas = document.createElement('canvas');
+            exportCanvas.width = finalWidth;
+            exportCanvas.height = finalHeight;
+
+            console.log(`Iniciando render de exportación: ${finalWidth}x${finalHeight}`);
+
+            // Use a fresh renderer for export
+            renderer = new WebGLRenderer(exportCanvas);
+            renderer.setImage(source);
+            renderer.render(s, finalWidth, finalHeight);
+            
+            const extension = settings.format.split('/')[1];
+            const fileName = `aura-${selectedPhoto.title.toLowerCase().replace(/\s+/g, '-') || Date.now()}.${extension}`;
+            
+            // Generate Blob
+            exportCanvas.toBlob((blob) => {
+              if (renderer) {
+                renderer.destroy();
+                renderer = null;
+              }
+
+              if (!blob) {
+                reject(new Error("No se pudo generar el archivo binario (Blob)"));
+                return;
+              }
+              
+              const downloadUrl = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.style.display = 'none';
+              link.download = fileName;
+              link.href = downloadUrl;
+              document.body.appendChild(link);
+              link.click();
+              
+              // Resolve BEFORE revoking to keep the toast happy
+              // Revoke after a longer delay to ensure the browser has handled the click
+              setTimeout(() => {
+                document.body.removeChild(link);
+                URL.revokeObjectURL(downloadUrl);
+                if (blobUrl) {
+                  URL.revokeObjectURL(blobUrl);
+                  blobUrl = null;
+                }
+              }, 1000);
+              
+              resolve(true);
+            }, settings.format, settings.quality);
+
+          } catch (e) {
+            console.error("Fallo en processDownload:", e);
+            if (renderer) renderer.destroy();
+            reject(e);
           }
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.download = fileName;
-          link.href = url;
-          link.click();
-          URL.revokeObjectURL(url);
-          resolve(true);
-        }, settings.format, settings.quality);
-      };
+        };
 
-      if (imageData) {
-        await processDownload(imageData);
-      } else {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => processDownload(img);
-        img.onerror = reject;
-        img.src = fixImageUrl(selectedPhoto.url);
+        if (imageData) {
+          console.log("Exportando desde datos RAW locales");
+          await processDownload(imageData);
+        } else {
+          try {
+            const { getAuth } = await import('firebase/auth');
+            const authObj = getAuth();
+            const token = await authObj.currentUser?.getIdToken();
+
+            const headers: HeadersInit = {};
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
+            // ELEGIR URL CORRECTA (manejar thumbnails de RAW si es necesario)
+            const isRaw = isRawFile(selectedPhoto.url);
+            let targetUrl = (isRaw && selectedPhoto.thumbnailUrl) 
+              ? selectedPhoto.thumbnailUrl 
+              : selectedPhoto.url;
+            
+            targetUrl = fixImageUrl(targetUrl);
+            console.log(`Exportando desde URL: ${targetUrl}`);
+
+            const response = await fetch(targetUrl, { headers });
+            if (!response.ok) throw new Error(`Error al descargar imagen: ${response.status} ${response.statusText}`);
+
+            const blob = await response.blob();
+            blobUrl = URL.createObjectURL(blob);
+
+            const img = new Image();
+            img.onload = () => {
+              processDownload(img).catch(reject);
+            };
+            img.onerror = () => {
+              reject(new Error("La imagen descargada no es un formato válido o está corrupta"));
+            };
+            img.src = blobUrl;
+          } catch (e) {
+            console.error("Fallo al obtener imagen remota:", e);
+            reject(e);
+          }
+        }
+      } catch (e) {
+        console.error("Fallo crítico en downloadImage:", e);
+        reject(e);
       }
     }), {
-      loading: 'Preparando descarga...',
-      success: 'Imagen descargada con éxito',
-      error: 'Error al descargar la imagen. Intenta con otra foto.'
+      loading: 'Procesando imagen de alta calidad...',
+      success: '¡Imagen descargada!',
+      error: (err: any) => `Error: ${err.message || 'No se pudo completar la descarga'}`
     });
   };
+
+  const categories = [
+    { id: 'ia', name: 'Auto', icon: Zap },
+    { id: 'light', name: 'Luz', icon: Sun },
+    { id: 'color', name: 'Color', icon: Palette },
+    { id: 'effects', name: 'Efectos', icon: Sparkles },
+    { id: 'detail', name: 'Detalle', icon: Eye },
+    { id: 'geometry', name: 'Recorte', icon: Crop },
+  ];
+
+  const mainTools = [
+    { id: 'presets', name: 'Presets', icon: ImagePlus },
+    { id: 'crop', name: 'Recorte', icon: Crop },
+    { id: 'edit', name: 'Editar', icon: SlidersHorizontal },
+    { id: 'masking', name: 'Mascara', icon: BoxSelect },
+    { id: 'healing', name: 'Corregir', icon: Eraser },
+  ];
 
   return (
     <div className="min-h-[100dvh] bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30 flex overflow-hidden relative">
@@ -3293,7 +3402,7 @@ function AppContent() {
               </div>
 
               {/* Main Content Area */}
-              <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative bg-[#0a0a0a]">
+              <div className={`flex-1 flex flex-col min-h-0 overflow-hidden relative bg-[#0a0a0a] transition-all duration-300 ${showEditorControls ? 'pb-[40dvh] lg:pb-0' : ''}`}>
                 {/* Image Stage */}
                   <div
                     ref={imageStageRef}
@@ -3429,62 +3538,63 @@ function AppContent() {
                       className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
                     />
                     <motion.div 
-                      initial={{ x: "100%" }}
-                      animate={{ x: 0 }}
-                      exit={{ x: "100%" }}
+                      key="editor-controls"
+                      initial={false}
+                      animate={{ y: 0, x: 0 }}
+                      exit={false}
                       transition={{ type: "spring", damping: 30, stiffness: 300 }}
-                      className="fixed inset-y-0 right-0 w-[85%] lg:relative lg:w-80 lg:inset-auto border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden z-50 lg:z-auto shadow-2xl lg:shadow-none"
+                      className="fixed inset-x-0 bottom-0 h-[40dvh] lg:h-full lg:relative lg:inset-auto lg:w-80 lg:min-w-[320px] border-t lg:border-t-0 lg:border-l border-zinc-900 bg-zinc-950 flex flex-col overflow-hidden z-50 lg:z-auto shadow-[0_-20px_50px_rgba(0,0,0,0.8)] lg:shadow-none"
                     >
                       {selectedPhoto && (
                         <>
-                          <div className="lg:hidden flex items-center justify-between p-4 border-b border-zinc-900 bg-zinc-900/30">
+                          {/* Desktop Header */}
+                          <div className="hidden lg:flex items-center justify-between p-4 border-b border-zinc-900 bg-zinc-900/30">
                             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Ajustes</span>
                             <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-500" onClick={() => setShowEditorControls(false)}>
                               <ChevronRight className="w-4 h-4" />
                             </Button>
                           </div>
-                          {/* Fixed Histogram Section */}
-                          <div className="p-4 sm:p-6 border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10 shrink-0">
-                            <div className="space-y-4">
-                              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
-                                Histograma
-                              </h4>
-                              <Histogram 
-                                settings={previewSettings || selectedPhoto.settings} 
-                                imageUrl={fixImageUrl((isRawFile(selectedPhoto.url) && selectedPhoto.thumbnailUrl) ? selectedPhoto.thumbnailUrl : selectedPhoto.url)} 
-                                pixelData={histogramPixels}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Scrollable Content Section */}
-                          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6">
+                          
+                          {/* Main Controls Scrolling Area */}
+                          <div className={`flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6 pb-24 lg:pb-6 ${!activeMobileCategory ? 'hidden lg:block' : 'block'}`}>
                             <div className="space-y-10">
-                              {/* AI Information Section */}
-                              {selectedPhoto.description && (
+                              {/* Desktop-only Histogram and AI Analysis */}
+                              <div className="hidden lg:block space-y-10">
                                 <div className="space-y-4">
-                                  <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
-                                    Análisis IA
-                                    <Sparkles className="w-3 h-3 text-amber-500" />
+                                  <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2">
+                                    Histograma
                                   </h4>
-                                  <div className="space-y-3">
-                                    <p className="text-[11px] text-zinc-400 leading-relaxed italic">
-                                      "{selectedPhoto.description}"
-                                    </p>
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {selectedPhoto.tags?.map((tag, idx) => (
-                                        <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
-                                          {tag}
-                                        </Badge>
-                                      ))}
+                                  <Histogram 
+                                    settings={previewSettings || selectedPhoto.settings} 
+                                    imageUrl={fixImageUrl((isRawFile(selectedPhoto.url) && selectedPhoto.thumbnailUrl) ? selectedPhoto.thumbnailUrl : selectedPhoto.url)} 
+                                    pixelData={histogramPixels}
+                                  />
+                                </div>
+
+                                {selectedPhoto.description && (
+                                  <div className="space-y-4">
+                                    <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-600 border-b border-zinc-900 pb-2 flex items-center justify-between">
+                                      Análisis IA
+                                      <Sparkles className="w-3 h-3 text-amber-500" />
+                                    </h4>
+                                    <div className="space-y-3">
+                                      <p className="text-[11px] text-zinc-400 leading-relaxed italic">
+                                        "{selectedPhoto.description}"
+                                      </p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {selectedPhoto.tags?.map((tag, idx) => (
+                                          <Badge key={idx} variant="outline" className="text-[9px] border-zinc-800 text-zinc-500 bg-zinc-900/30">
+                                            {tag}
+                                          </Badge>
+                                        ))}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              )}
+                                )}
+                              </div>
 
-                              {/* Main Controls */}
                               <LightingControls 
-                                key={selectedPhoto.id}
+                                key={selectedPhoto.id + (activeMobileCategory || 'full')}
                                 settings={previewSettings || selectedPhoto.settings} 
                                 onChange={handleEditorChange}
                                 onPreviewChange={handleEditorPreview}
@@ -3494,7 +3604,60 @@ function AppContent() {
                                 onCopySettings={() => copySettings(selectedPhoto.settings)}
                                 onPasteSettings={() => pasteSettings(selectedPhoto.id)}
                                 hasCopiedSettings={!!copiedSettings}
+                                activeCategory={activeMobileCategory}
                               />
+                            </div>
+                          </div>
+
+                          {/* Mobile Lightroom Style Navigation */}
+                          <div className="lg:hidden flex flex-col border-t border-zinc-900/50 bg-[#080808]">
+                            {/* Categories Bar */}
+                            {activeMobileTool === 'edit' && (
+                              <div className="flex items-center gap-6 px-6 py-4 overflow-x-auto custom-scrollbar border-b border-zinc-900/40">
+                                {categories.map((cat) => {
+                                  const Icon = cat.icon;
+                                  const isActive = activeMobileCategory === cat.id;
+                                  return (
+                                    <button
+                                      key={cat.id}
+                                      onClick={() => setActiveMobileCategory(isActive ? null : cat.id)}
+                                      className="flex flex-col items-center gap-2 shrink-0 group transition-all"
+                                    >
+                                      <Icon className={`w-5 h-5 transition-colors ${isActive ? 'text-amber-500' : 'text-zinc-500 group-hover:text-zinc-300'}`} />
+                                      <span className={`text-[8px] font-bold uppercase tracking-widest ${isActive ? 'text-amber-500' : 'text-zinc-600'}`}>{cat.name}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* Main Tools Bar */}
+                            <div className="flex items-center justify-around px-2 py-3 bg-black">
+                              {mainTools.map((tool) => {
+                                const Icon = tool.icon;
+                                const isActive = activeMobileTool === tool.id;
+                                return (
+                                  <button
+                                    key={tool.id}
+                                    onClick={() => {
+                                      setActiveMobileTool(tool.id as any);
+                                      if (tool.id !== 'edit') setActiveMobileCategory(null);
+                                    }}
+                                    className="flex flex-col items-center gap-1.5 px-3 py-1 relative"
+                                  >
+                                    <div className={`p-2 rounded-xl transition-all ${isActive ? 'bg-amber-500 text-black' : 'text-zinc-500'}`}>
+                                      <Icon className="w-5 h-5" />
+                                    </div>
+                                    <span className={`text-[8px] font-bold uppercase tracking-tight ${isActive ? 'text-white' : 'text-zinc-600'}`}>{tool.name}</span>
+                                    {isActive && (
+                                      <motion.div 
+                                        layoutId="activeTool"
+                                        className="absolute -bottom-1 w-1 h-1 bg-amber-500 rounded-full"
+                                      />
+                                    )}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         </>
