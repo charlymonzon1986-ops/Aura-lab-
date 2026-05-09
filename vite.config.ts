@@ -9,6 +9,24 @@ import topLevelAwait from "vite-plugin-top-level-await";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   
+  // Expose standard FIREBASE_ variables to the client by prefixing with VITE_
+  // This helps when users add secrets without the VITE_ prefix
+  const firebaseKeys = [
+    'FIREBASE_API_KEY',
+    'FIREBASE_AUTH_DOMAIN',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_STORAGE_BUCKET',
+    'FIREBASE_MESSAGING_SENDER_ID',
+    'FIREBASE_APP_ID',
+    'FIREBASE_DATABASE_ID'
+  ];
+
+  firebaseKeys.forEach(key => {
+    if (env[key]) {
+      process.env[`VITE_${key}`] = env[key];
+    }
+  });
+
   return {
     plugins: [
       wasm(),
